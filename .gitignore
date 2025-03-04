@@ -1,0 +1,7 @@
+.DS_Store
+*.log
+*.pth
+*.pyc
+*.swp
+loss_graph.png
+__pycache__
