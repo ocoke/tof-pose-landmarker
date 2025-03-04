@@ -39,7 +39,7 @@ jobs:
         
       - name: Train model
         run: |
-          python train.py
+          PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 python train.py
           
       - name: Get current version
         id: get_version
