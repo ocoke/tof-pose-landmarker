@@ -11,7 +11,7 @@ on:
 
 jobs:
   train-and-release:
-    runs-on: macos-13
+    runs-on: macos-latest-xlarge
     
     steps:
       - name: Checkout code
