@@ -14,183 +14,314 @@ import torch.optim as optim
 from torchvision import transforms
 import matplotlib.pyplot as plt
 
-# CNN Model
-from model import GrayscaleCNN
+# Heatmap
+from model import HeatmapPoseModel
+from dataset import PoseDataset
 
-BATCH_SIZE = 32
-
-# Define the dataset
-class PoseLandmarkDataset(Dataset):
-    def __init__(self, images_dir, annotations_dir, transform=None):
-        """
-        Args:
-            images_dir (string): Directory with all the images.
-            annotations_dir (string): Directory with all the JSON annotation files.
-            transform (callable, optional): Optional transform to be applied on a sample.
-        """
-        self.images_dir = images_dir
-        self.annotations_dir = annotations_dir
-        self.transform = transform
-        # unique image filenames matching the annotation files
-        file_list = sorted(os.listdir(images_dir))
-        # only takes PNG files
-        self.image_filenames = list(filter(lambda f: f.endswith('.png'), file_list))
+def heatmaps_to_coordinates(heatmaps):
+    """Convert heatmaps to keypoint coordinates using argmax."""
+    batch_size = heatmaps.size(0)
+    num_keypoints = heatmaps.size(1)
+    height = heatmaps.size(2)
+    width = heatmaps.size(3)
     
-    def __len__(self):
-        return len(self.image_filenames)
+    # Reshape heatmaps to find argmax
+    heatmaps_flat = heatmaps.reshape(batch_size, num_keypoints, -1)
     
-    def __getitem__(self, idx):
-        # Get the image filename and its corresponding annotation filename
-        img_filename = self.image_filenames[idx]
-        img_path = os.path.join(self.images_dir, img_filename)
-        image = Image.open(img_path).convert('L') # ensure it's gray scale
-        annotation_path = os.path.join(self.annotations_dir, os.path.splitext(img_filename)[0] + '.json')
+    # Option 1: Hard argmax (less accurate)
+    # max_val, max_idx = torch.max(heatmaps_flat, dim=2)
+    # x = max_idx % width
+    # y = max_idx // width
+    
+    # Option 2: Soft-argmax (differentiable, more accurate)
+    heatmaps_softmax = F.softmax(heatmaps_flat, dim=2)
+    
+    # Create coordinate reference maps
+    x_ref = torch.arange(0, width).float().to(heatmaps.device)
+    y_ref = torch.arange(0, height).float().to(heatmaps.device)
+    
+    y_map, x_map = torch.meshgrid(y_ref, x_ref, indexing='ij')
+    x_map = x_map.reshape(-1)  # Flatten to 1D
+    y_map = y_map.reshape(-1)
+    
+    # Weight coordinates by probabilities
+    x_coord = torch.sum(heatmaps_softmax * x_map.unsqueeze(0).unsqueeze(0), dim=2)
+    y_coord = torch.sum(heatmaps_softmax * y_map.unsqueeze(0).unsqueeze(0), dim=2)
+    
+    # Normalize to 0-1
+    x_coord = x_coord / (width - 1)
+    y_coord = y_coord / (height - 1)
+    
+    # Stack coordinates
+    coords = torch.stack((x_coord, y_coord), dim=2)
+    
+    return coords
 
-        with open(annotation_path) as f:
-            annotation = json.load(f)
+def calculate_pck(pred_coords, gt_coords, threshold=0.2):
+    """
+    Calculate PCK (Percentage of Correct Keypoints).
+    
+    Args:
+        pred_coords: Predicted coordinates, shape (batch_size, num_keypoints, 2)
+        gt_coords: Ground truth coordinates, shape (batch_size, num_keypoints, 2)
+        threshold: Distance threshold as a fraction of torso size
+    
+    Returns:
+        PCK value
+    """
+    batch_size = pred_coords.shape[0]
+    num_keypoints = pred_coords.shape[1]
+    
+    # Calculate torso size for each sample (distance between hip and shoulder)
+    # For simplicity, using a fixed normalization:
+    # distance between left shoulder (1) and right hip (8)
+    torso_sizes = torch.sqrt(
+        ((gt_coords[:, 1, :] - gt_coords[:, 8, :])**2).sum(dim=1)
+    )
+    
+    # Calculate distances between predictions and ground truth
+    distances = torch.sqrt(((pred_coords - gt_coords)**2).sum(dim=2))
+    
+    # Normalize by torso size
+    normalized_distances = distances / torso_sizes.unsqueeze(1)
+    
+    # Count correct keypoints
+    correct_keypoints = (normalized_distances < threshold).float().sum()
+    
+    # Calculate PCK
+    pck = correct_keypoints / (batch_size * num_keypoints)
+    
+    return pck.item()
+
+def train_model(model, train_loader, val_loader, device, num_epochs=30):
+    # Setup optimizer and loss
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.MSELoss()
+    
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.1, patience=3, verbose=True
+    )
+    
+    best_val_pck = 0.0
+    
+    for epoch in range(num_epochs):
+        print('[INFO] Start training epoch:', epoch)
+        # Training phase
+        model.train()
+        train_loss = 0.0
         
-        landmarks_list = annotation['pose_landmarks'][0]
-        landmarks = np.array([[lm["x"], lm["y"]] for lm in landmarks_list], dtype=np.float32)
+        for images, keypoints in train_loader:
+            # Move to device
+            images = images.to(device)
+            print('[INFO] Load Image: ', images.shape)
+            # Generate target heatmaps
+            target_heatmaps = torch.zeros((images.size(0), 15, 64, 64)).to(device)
+            for b in range(images.size(0)):
+                for k in range(keypoints.size(1)):
+                    x, y = keypoints[b, k, 0].item(), keypoints[b, k, 1].item()
+                    # Skip if keypoint is not visible
+                    if x == 0 and y == 0:
+                        continue
+                    
+                    # Convert to heatmap coordinates
+                    x = int(x * 64)
+                    y = int(y * 64)
+                    
+                    # Apply gaussian
+                    for i in range(64):
+                        for j in range(64):
+                            target_heatmaps[b, k, i, j] = torch.exp(
+                                torch.tensor(-((i - y)**2 + (j - x)**2) / (2 * 2**2))
+                            )
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            pred_heatmaps = model(images)
+            
+            # Calculate loss
+            loss = criterion(pred_heatmaps, target_heatmaps)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Update weights
+            optimizer.step()
+            
+            train_loss += loss.item()
 
-        sample = {'image': image, 'landmarks': landmarks}
 
-        if self.transform:
-            sample = self.transform(sample)
+        # Calculate average training loss
+        train_loss /= len(train_loader)
         
-        return sample
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        all_preds = []
+        all_gts = []
+        
+        with torch.no_grad():
+            for images, keypoints in val_loader:
+                # Move to device
+                images = images.to(device)
+                keypoints = keypoints.to(device)
+                
+                # Forward pass
+                pred_heatmaps = model(images)
+                
+                # Convert heatmaps to coordinates
+                pred_coords = heatmaps_to_coordinates(pred_heatmaps)
+                
+                # Store for PCK calculation
+                all_preds.append(pred_coords)
+                all_gts.append(keypoints)
+                
+                # Generate target heatmaps (same as training)
+                target_heatmaps = torch.zeros((images.size(0), 15, 64, 64)).to(device)
+                for b in range(images.size(0)):
+                    for k in range(keypoints.size(1)):
+                        x, y = keypoints[b, k, 0].item(), keypoints[b, k, 1].item()
+                        if x == 0 and y == 0:
+                            continue
+                        
+                        x = int(x * 64)
+                        y = int(y * 64)
+                        
+                        for i in range(64):
+                            for j in range(64):
+                                target_heatmaps[b, k, i, j] = torch.exp(
+                                    -((i - y)**2 + (j - x)**2) / (2 * 2**2)
+                                )
+                
+                # Calculate loss
+                loss = criterion(pred_heatmaps, target_heatmaps)
+                val_loss += loss.item()
+        
+        # Calculate average validation loss
+        val_loss /= len(val_loader)
+        
+        # Calculate PCK
+        all_preds = torch.cat(all_preds, dim=0)
+        all_gts = torch.cat(all_gts, dim=0)
+        val_pck = calculate_pck(all_preds, all_gts, threshold=0.2)
+        
+        # Print epoch results
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        print(f"Train Loss: {train_loss:.4f}")
+        print(f"Val Loss: {val_loss:.4f}, Val PCK: {val_pck:.4f}")
+        
+        # Update learning rate
+        scheduler.step(val_loss)
+        
+        # Save best model
+        if val_pck > best_val_pck:
+            best_val_pck = val_pck
+            torch.save(model.state_dict(), 'best_pose_model.pth')
+            print(f"Saved new best model with PCK: {best_val_pck:.4f}")
+
+
+def visualize_predictions(model, image_path, device):
+    # Load and preprocess image
+    transform = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+    ])
     
-
-
-
-
-class ToTensor(object):
-    """Convert a sample with image and landmarks to Tensors."""
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-        # Convert image to tensor: resulting shape [C, H, W]. For grayscale, C=1.
-        image = transforms.ToTensor()(image)
-        # Optionally convert landmarks to tensor
-        landmarks = torch.from_numpy(landmarks)
-        return {'image': image, 'landmarks': landmarks}
-
-class ApplyToImage(object):
-    """Apply a transformation to the 'image' key of a sample dict."""
-    def __init__(self, transform):
-        self.transform = transform
-
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-        # Apply the transformation to the image only
-        image = self.transform(image)
-        return {'image': image, 'landmarks': landmarks}
-
-
-data_transforms = transforms.Compose([
-    # transforms.Grayscale(num_output_channels=1),
-    ApplyToImage(transforms.Grayscale(num_output_channels=1)), # make sure the image is grayscale
-    ToTensor()
-])
-
-
-# Load the dataset
-
-dataset = PoseLandmarkDataset(images_dir='images', annotations_dir='annotations', transform=data_transforms)
-
-# randomly split the dataset into training and validation sets
-# 80% data for training, 20% for validation
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-
-train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-
-# Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-# the new model only contains 15 keypoints
-# see README.md for detailed differences
-num_classes = 15  
-model = GrayscaleCNN(num_classes)
-
-# We move our tensor to the current accelerator if available
-
-device = "cpu"
-if torch.accelerator.is_available():
-    model = model.to(torch.accelerator.current_accelerator())
-    device = torch.accelerator.current_accelerator()
-    print('[INFO] Model moved to accelerator:', torch.accelerator.current_accelerator())
-
-criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-num_epochs = 50
-
-sample = dataset[0]
-print(type(sample['image']), sample['image'].shape)      # Should be a tensor, e.g., torch.Tensor with shape [1, 240, 180]
-print(type(sample['landmarks']), sample['landmarks'].shape)  # Should be a tensor or numpy array, depending on your conversion
-
-train_losses = []
-val_losses = []
-
-for epoch in range(num_epochs):
-    model.train()
-    running_loss = 0.0
-
-    for batch in train_loader:
-        inputs = batch['image']
-        labels = batch['landmarks']
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
+    image = Image.open(image_path).convert('L')
+    original_image = np.array(image)
     
-    epoch_loss = running_loss / len(train_dataset)
-    train_losses.append(epoch_loss)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}, Accuracy: {100-epoch_loss:.2f}%")
-
-    # Validation phase
+    input_tensor = transform(image).unsqueeze(0).to(device)
+    
+    # Get predictions
     model.eval()
-    correct = 0
-    total = 0
-    val_loss = 0.0
     with torch.no_grad():
-        for inputs, labels in val_loader:
-            inputs = batch['image'].to(device)
-            labels = batch['landmarks'].to(device)
-            outputs = model(inputs)
-            # _, predicted = torch.max(outputs, 1)
-
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-            # total += labels.size(0)
-            # correct += (predicted == labels).sum().item()
+        heatmaps = model(input_tensor)
+        keypoints = heatmaps_to_coordinates(heatmaps).squeeze().cpu().numpy()
     
-    # val_accuracy = correct / total
-    # print(f"Validation Accuracy: {val_accuracy:.4f}")
-    avg_val_loss = val_loss / len(val_loader)
-    val_losses.append(avg_val_loss)
+    # Visualization
+    plt.figure(figsize=(10, 10))
+    plt.imshow(original_image, cmap='gray')
     
-    print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {100-avg_val_loss:.2f}%")
+    # Define skeleton connections
+    connections = [
+        (1, 2), (1, 3), (2, 4), (3, 5), (4, 6),
+        (1, 7), (2, 8), (7, 8), (7, 9), (8, 10),
+        (9, 11), (10, 12), (11, 13), (12, 14)
+    ]
+    
+    # Plot keypoints
+    h, w = original_image.shape[:2]
+    for i, (x, y) in enumerate(keypoints):
+        plt.scatter(x * w, y * h, c='r', s=50)
+        plt.text(x * w, y * h, str(i), fontsize=12)
+    
+    # Plot connections
+    for connection in connections:
+        plt.plot(
+            [keypoints[connection[0], 0] * w, keypoints[connection[1], 0] * w],
+            [keypoints[connection[0], 1] * h, keypoints[connection[1], 1] * h],
+            'g-', linewidth=2
+        )
+    
+    plt.title("Pose Estimation Result")
+    plt.axis('off')
+    plt.show()
+    
+    # Show individual heatmaps
+    fig, axes = plt.subplots(3, 5, figsize=(15, 9))
+    axes = axes.flatten()
+    
+    for i in range(15):
+        hmap = heatmaps[0, i].cpu().numpy()
+        axes[i].imshow(hmap, cmap='hot')
+        axes[i].set_title(f"Keypoint {i}")
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
 
+def main():
+    # Set device
+    device = "cpu"
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator()
+        print('[INFO] Model moved to accelerator:', torch.accelerator.current_accelerator())
+        
+    # Define transforms
+    transform = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
+    
+    # Create dataset
+    dataset = PoseDataset('images', 'annotations', transform=transform)
+    
+    # Split dataset
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    
+    # Create model
+    model = HeatmapPoseModel(num_keypoints=15).to(device)
+    
+    # Train model
+    train_model(model, train_loader, val_loader, device, num_epochs=30)
+    
+    # Load best model and evaluate
+    model.load_state_dict(torch.load('best_pose_model.pth'))
+    
+    # Visualize predictions on a sample image
+    sample_image = 'images/sample.png'
+    visualize_predictions(model, sample_image, device)
 
-torch.save(model.state_dict(), 'model.pth')
-print("Model saved to model.pth")
-
-# Export the loss graph (optional)
-plt.figure(figsize=(10, 6))
-plt.plot(range(1, num_epochs+1), train_losses, label='Training Loss', marker='o')
-plt.plot(range(1, num_epochs+1), val_losses, label='Validation Loss', marker='o')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
-plt.grid(True)
-plt.savefig('loss_graph.png')
-# plt.show()
+if __name__ == "__main__":
+    main()
