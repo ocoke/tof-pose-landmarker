@@ -1,4 +1,4 @@
-# Grayscale Pose Landmarker
+# ToF Pose Landmarker
 
 A specialized CNN-based pose landmark detection model trained specifically for grayscale images captured by ToF (Time of Flight) cameras.
 

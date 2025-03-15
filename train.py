@@ -1,196 +1,215 @@
-# Pose Landmark Model for Gray-scale Images
-# By Jun Yu, Feb 22, 2025
-
 import os
 import json
+import math
+import random
 import numpy as np
-from PIL import Image
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import transforms
 import matplotlib.pyplot as plt
 
-# CNN Model
-from model import GrayscaleCNN
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from PIL import Image
+import torchvision.transforms.functional as TF
 
-BATCH_SIZE = 32
+from model import PoseResNet, BasicBlock
 
-# Define the dataset
-class PoseLandmarkDataset(Dataset):
-    def __init__(self, images_dir, annotations_dir, transform=None):
+# generate ground truth heatmap
+def generate_gaussian_heatmap(center, output_size, sigma=2):
+    """
+    Generates a single gaussian heatmap.
+
+    Args:
+        center (tuple): (x,y) normalized coordinates in range [0,1] corresponding to ground truth.
+        output_size (tuple): (H, W) size of the heatmap.
+        sigma (float): standard deviation of the Gaussian.
+    Returns:
+        heatmap (np.array): generated heatmap.
+    """
+    H, W = output_size
+    # Convert normalized coordinates to pixel coordinates in heatmap space
+    x0 = center[0] * (W - 1)
+    y0 = center[1] * (H - 1)
+    # Create meshgrid
+    xs = np.arange(0, W, dtype=np.float32)
+    ys = np.arange(0, H, dtype=np.float32)
+    ys = ys.reshape(-1, 1)
+    
+    heatmap = np.exp(- ((xs - x0) ** 2 + (ys - y0) ** 2) / (2 * sigma ** 2))
+    return heatmap
+
+def generate_target_heatmaps(keypoints, output_size, sigma=2):
+    """
+    Generate multilayer heatmaps for all keypoints.
+
+    Args:
+        keypoints (Tensor): Tensor of shape (num_keypoints, 2) with normalized coordinates.
+        output_size (tuple): (H, W) of the heatmap output.
+        sigma (float): Gaussian sigma.
+    Returns:
+        heatmaps (Tensor): Tensor of shape (num_keypoints, H, W)
+    """
+    num_keypoints = keypoints.shape[0]
+    heatmaps = np.zeros((num_keypoints, output_size[0], output_size[1]), dtype=np.float32)
+    keypoints_np = keypoints.cpu().numpy() if isinstance(keypoints, torch.Tensor) else keypoints
+    for i in range(num_keypoints):
+        # if keypoint (x,y) are both zero, assume not visible and leave heatmap as zeros
+        if keypoints_np[i, 0] == 0 and keypoints_np[i, 1] == 0:
+            continue
+        heatmaps[i] = generate_gaussian_heatmap(keypoints_np[i], output_size, sigma)
+    return torch.tensor(heatmaps)
+
+
+class PoseDataset(Dataset):
+    def __init__(self, image_dir, ann_dir, transform=None, heatmap_size=(12, 16), sigma=2):
         """
         Args:
-            images_dir (string): Directory with all the images.
-            annotations_dir (string): Directory with all the JSON annotation files.
-            transform (callable, optional): Optional transform to be applied on a sample.
+            image_dir (str): Path to directory with grayscale images.
+            ann_dir (str): Path to directory with JSON annotations.
+            transform (callable, optional): Optional transform to be applied on an image.
+            heatmap_size (tuple): The size (H,W) to which ground truth heatmaps are generated.
+            sigma (float): Standard deviation for gaussian heatmap generation.
         """
-        self.images_dir = images_dir
-        self.annotations_dir = annotations_dir
+        self.image_dir = image_dir
+        self.ann_dir = ann_dir
         self.transform = transform
-        # unique image filenames matching the annotation files
-        file_list = sorted(os.listdir(images_dir))
-        # only takes PNG files
-        self.image_filenames = list(filter(lambda f: f.endswith('.png'), file_list))
-    
+        self.heatmap_size = heatmap_size
+        self.sigma = sigma
+        self.image_files = [f for f in os.listdir(image_dir) if f.endswith('.png')]
+        
+
     def __len__(self):
-        return len(self.image_filenames)
-    
+        return len(self.image_files)
+
     def __getitem__(self, idx):
-        # Get the image filename and its corresponding annotation filename
-        img_filename = self.image_filenames[idx]
-        img_path = os.path.join(self.images_dir, img_filename)
-        image = Image.open(img_path).convert('L') # ensure it's gray scale
-        annotation_path = os.path.join(self.annotations_dir, os.path.splitext(img_filename)[0] + '.json')
-
-        with open(annotation_path) as f:
-            annotation = json.load(f)
-        
-        landmarks_list = annotation['pose_landmarks'][0]
-        landmarks = np.array([[lm["x"], lm["y"]] for lm in landmarks_list], dtype=np.float32)
-
-        sample = {'image': image, 'landmarks': landmarks}
-
+        # Load image and resize to 240x180 (width x height)
+        filename = self.image_files[idx]
+        image_path = os.path.join(self.image_dir, filename)
+        image = Image.open(image_path).convert('L')
+        image = image.resize((240, 180))
+        image = TF.hflip(image) # if needed flip the image
         if self.transform:
-            sample = self.transform(sample)
-        
-        return sample
-    
+            image = self.transform(image)
+        else:
+            image = transforms.ToTensor()(image)
+            
+        # Load annotation and use the first 15 landmarks in order.
+        ann_filename = filename.replace('.png', '.json')
+        ann_path = os.path.join(self.ann_dir, ann_filename)
+        with open(ann_path, 'r') as f:
+            annotation = json.load(f)
+        keypoints = []
+        # Use the first set of landmarks.
+        landmarks = annotation.get("pose_landmarks", [])
+        if len(landmarks) > 0 and len(landmarks[0]) >= 15:
+            for i in range(15):
+                kp = landmarks[0][i]
+                keypoints.append([kp['x'], kp['y']])
+        else:
+            keypoints = [[0.0, 0.0] for _ in range(15)]
+        keypoints = torch.tensor(keypoints, dtype=torch.float32)
+        target_heatmaps = generate_target_heatmaps(keypoints, self.heatmap_size, self.sigma)
+        return image, target_heatmaps, keypoints
 
 
+def train():
+    num_epochs = 30
+    batch_size = 16
+    learning_rate = 1e-3
+    device = "cpu"
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator()
+        print('[INFO] Model moved to accelerator:', torch.accelerator.current_accelerator())
 
+    transform  = transforms.ToTensor()
 
-class ToTensor(object):
-    """Convert a sample with image and landmarks to Tensors."""
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-        # Convert image to tensor: resulting shape [C, H, W]. For grayscale, C=1.
-        image = transforms.ToTensor()(image)
-        # Optionally convert landmarks to tensor
-        landmarks = torch.from_numpy(landmarks)
-        return {'image': image, 'landmarks': landmarks}
+    dataset = PoseDataset(
+        image_dir="images",
+        ann_dir="annotations",
+        transform=transform,
+        heatmap_size=(12, 16),
+        sigma=1.5
+    )
 
-class ApplyToImage(object):
-    """Apply a transformation to the 'image' key of a sample dict."""
-    def __init__(self, transform):
-        self.transform = transform
+    # 80% imaegs for training, 20% for validation
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
 
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-        # Apply the transformation to the image only
-        image = self.transform(image)
-        return {'image': image, 'landmarks': landmarks}
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-data_transforms = transforms.Compose([
-    # transforms.Grayscale(num_output_channels=1),
-    ApplyToImage(transforms.Grayscale(num_output_channels=1)), # make sure the image is grayscale
-    ToTensor()
-])
+    model = PoseResNet(BasicBlock, [2, 2, 2, 2], num_joints=15)
+    model = model.to(device)
 
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# Load the dataset
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0.0
+        for images, target_heatmaps, _ in train_loader:
+            images = images.to(device)
+            target_heatmaps = target_heatmaps.to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            # print("Output shape:", outputs.shape)
+            # print("Target shape:", target_heatmaps.shape)
+            loss = criterion(outputs, target_heatmaps)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        total_loss /= len(train_loader)
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}")
 
-dataset = PoseLandmarkDataset(images_dir='images', annotations_dir='annotations', transform=data_transforms)
+        validate_and_visualize(model, val_loader, device)
+        # if (epoch+1) % 5 == 0:
+        #     validate_and_visualize(model, val_loader, device)
 
-# randomly split the dataset into training and validation sets
-# 80% data for training, 20% for validation
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
+    print("Finished Training")
+    torch.save(model.state_dict(), "pose_resnet.pth")
 
-train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-
-# Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-# the new model only contains 15 keypoints
-# see README.md for detailed differences
-num_classes = 15  
-model = GrayscaleCNN(num_classes)
-
-# We move our tensor to the current accelerator if available
-
-device = "cpu"
-if torch.accelerator.is_available():
-    model = model.to(torch.accelerator.current_accelerator())
-    device = torch.accelerator.current_accelerator()
-    print('[INFO] Model moved to accelerator:', torch.accelerator.current_accelerator())
-
-criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-num_epochs = 50
-
-sample = dataset[0]
-print(type(sample['image']), sample['image'].shape)      # Should be a tensor, e.g., torch.Tensor with shape [1, 240, 180]
-print(type(sample['landmarks']), sample['landmarks'].shape)  # Should be a tensor or numpy array, depending on your conversion
-
-train_losses = []
-val_losses = []
-
-for epoch in range(num_epochs):
-    model.train()
-    running_loss = 0.0
-
-    for batch in train_loader:
-        inputs = batch['image']
-        labels = batch['landmarks']
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-    
-    epoch_loss = running_loss / len(train_dataset)
-    train_losses.append(epoch_loss)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}, Accuracy: {100-epoch_loss:.2f}%")
-
-    # Validation phase
+def validate_and_visualize(model, val_loader, device):
     model.eval()
-    correct = 0
-    total = 0
-    val_loss = 0.0
+    total_loss = 0.0
     with torch.no_grad():
-        for inputs, labels in val_loader:
-            inputs = batch['image'].to(device)
-            labels = batch['landmarks'].to(device)
-            outputs = model(inputs)
-            # _, predicted = torch.max(outputs, 1)
-
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-            # total += labels.size(0)
-            # correct += (predicted == labels).sum().item()
+        for images, target_heatmaps, _ in val_loader:
+            images = images.to(device)
+            target_heatmaps = target_heatmaps.to(device)
+            preds = model(images)
+            loss = F.mse_loss(preds, target_heatmaps)
+            total_loss += loss.item()
+    total_loss /= len(val_loader)
+    print(f"Validation Loss: {total_loss:.4f}")
     
-    # val_accuracy = correct / total
-    # print(f"Validation Accuracy: {val_accuracy:.4f}")
-    avg_val_loss = val_loss / len(val_loader)
-    val_losses.append(avg_val_loss)
+    # Visualize a batch sample
+    images, target_heatmaps, _ = next(iter(val_loader))
+    images = images.to(device)
+    preds = model(images)
+
+    random_image = random.randint(0, images.size(0) - 1)
+
+    image_np = images[random_image].cpu().squeeze().numpy()
+    gt_heat_np = target_heatmaps[random_image].cpu().numpy()  # (15, H, W)
+    pred_heat_np = preds[random_image].cpu().detach().numpy()
     
-    print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {100-avg_val_loss:.2f}%")
+    # For visualization, sum the keypoint heatmaps
+    gt_sum = np.sum(gt_heat_np, axis=0)
+    pred_sum = np.sum(pred_heat_np, axis=0)
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 3, 1)
+    plt.imshow(image_np, cmap="gray")
+    plt.title("Input Image")
+    plt.subplot(1, 3, 2)
+    plt.imshow(gt_sum, cmap="jet")
+    plt.title("GT Heatmaps Sum")
+    plt.subplot(1, 3, 3)
+    plt.imshow(pred_sum, cmap="jet")
+    plt.title("Predicted Heatmaps Sum")
+    plt.show()
 
-
-torch.save(model.state_dict(), 'model.pth')
-print("Model saved to model.pth")
-
-# Export the loss graph (optional)
-plt.figure(figsize=(10, 6))
-plt.plot(range(1, num_epochs+1), train_losses, label='Training Loss', marker='o')
-plt.plot(range(1, num_epochs+1), val_losses, label='Validation Loss', marker='o')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
-plt.grid(True)
-plt.savefig('loss_graph.png')
-# plt.show()
+if __name__ == "__main__":
+    train()
