@@ -116,7 +116,7 @@ class PoseDataset(Dataset):
 
 
 def train():
-    num_epochs = 50
+    num_epochs = 80
     batch_size = 128
     learning_rate = 1e-3
     
@@ -149,7 +149,7 @@ def train():
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = StepLR(optimizer, step_size=15, gamma=0.1)
+    scheduler = StepLR(optimizer, step_size=15, gamma=0.5)
     # scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
 
