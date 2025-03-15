@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from PIL import Image
 import torchvision.transforms.functional as TF
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 
 from model import PoseResNet, BasicBlock
 
@@ -117,7 +117,7 @@ class PoseDataset(Dataset):
 
 def train():
     num_epochs = 50
-    batch_size = 64
+    batch_size = 128
     learning_rate = 1e-3
     
     device = "cpu"
@@ -149,7 +149,9 @@ def train():
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+    # scheduler = StepLR(optimizer, step_size=15, gamma=0.1)
+    scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+
 
     for epoch in range(num_epochs):
         model.train()
@@ -170,7 +172,7 @@ def train():
         print(f"Epoch {epoch+1}/{num_epochs}, LR: {scheduler.get_last_lr()[0]}, Loss: {total_loss:.4f}")
         
         # validate_and_visualize(model, val_loader, device)
-        if (epoch+1) % 5 == 0:
+        if (epoch+1) % 15 == 0:
             validate_and_visualize(model, val_loader, device)
 
     print("Finished Training")
