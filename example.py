@@ -151,7 +151,7 @@ def main():
 
     # image_path = "images/frame_20250224_143718.png"  # Provide your image path
     image_path = get_random_file("images")
-    weights_path = "pose_resnet_1.pth"  # Provide your model's weights path
+    weights_path = "pose_resnet.pth"  # Provide your model's weights path
 
     # Load ground truth landmarks from the annotation JSON
     gt_landmarks = get_ground_truth_landmarks(image_path, ann_dir="annotations")

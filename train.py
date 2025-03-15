@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from PIL import Image
 import torchvision.transforms.functional as TF
+from torch.optim.lr_scheduler import StepLR
 
 from model import PoseResNet, BasicBlock
 
@@ -115,9 +116,10 @@ class PoseDataset(Dataset):
 
 
 def train():
-    num_epochs = 30
-    batch_size = 16
+    num_epochs = 50
+    batch_size = 64
     learning_rate = 1e-3
+    
     device = "cpu"
     if torch.accelerator.is_available():
         device = torch.accelerator.current_accelerator()
@@ -147,6 +149,7 @@ def train():
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
 
     for epoch in range(num_epochs):
         model.train()
@@ -163,11 +166,12 @@ def train():
             optimizer.step()
             total_loss += loss.item()
         total_loss /= len(train_loader)
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}")
-
-        validate_and_visualize(model, val_loader, device)
-        # if (epoch+1) % 5 == 0:
-        #     validate_and_visualize(model, val_loader, device)
+        scheduler.step()
+        print(f"Epoch {epoch+1}/{num_epochs}, LR: {scheduler.get_last_lr()[0]}, Loss: {total_loss:.4f}")
+        
+        # validate_and_visualize(model, val_loader, device)
+        if (epoch+1) % 5 == 0:
+            validate_and_visualize(model, val_loader, device)
 
     print("Finished Training")
     torch.save(model.state_dict(), "pose_resnet.pth")
