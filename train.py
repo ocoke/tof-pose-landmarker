@@ -149,8 +149,8 @@ def train():
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    # scheduler = StepLR(optimizer, step_size=15, gamma=0.1)
-    scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+    scheduler = StepLR(optimizer, step_size=15, gamma=0.1)
+    # scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
 
     for epoch in range(num_epochs):
