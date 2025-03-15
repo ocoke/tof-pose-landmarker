@@ -1,24 +1,23 @@
 # ToF Pose Landmarker
 
-A specialized CNN-based pose landmark detection model trained specifically for grayscale images captured by ToF (Time of Flight) cameras.
+A pose landmark estimation model trained for grayscale images captured by ToF (Time-of-Flight) cameras.
 
 ## Overview
 
-This project addresses the domain shift problem in traditional pose landmark models (like MediaPipe) when working with grayscale ToF camera images. By directly training on ToF camera data with its inherent noise characteristics, this model provides more accurate pose estimation for grayscale depth-sensing applications.
+This project addresses the domain shift problem in traditional pose landmark models when working with grayscale ToF camera images. By directly training on ToF camera data with its inherent noise characteristics, this model provides more accurate pose estimation for grayscale depth-sensing applications.
 
 ## Features
 
 - Optimized for grayscale images from ToF cameras
 - Reduced keypoint set designed for practical ToF camera applications
 - Noise-tolerant architecture trained directly on ToF camera data
-- MediaPipe-compatible keypoint format (with modifications)
 - PyTorch-based implementation
 
 ## Keypoint Structure
 
 This model uses a modified keypoint structure with 15 landmarks, adapted from the original MediaPipe pose landmarker:
 
-| Index | Keypoint       | Original Index |
+| Index | Keypoint       | MediaPipe Original Index |
 |-------|----------------|---------------|
 | 0     | Head           | 0             |
 | 1     | Left Shoulder  | 11            |
@@ -36,13 +35,6 @@ This model uses a modified keypoint structure with 15 landmarks, adapted from th
 | 13    | Left Foot      | 31            |
 | 14    | Right Foot     | 32            |
 
-## Model Architecture
-
-The model employs a CNN-based architecture:
-- Input: Grayscale images (1 channel)
-- Multiple convolutional layers with ReLU activations and max pooling
-- Fully connected layers for keypoint regression
-- Output: 15 keypoints with (x,y) coordinates
 
 ## Dataset
 
@@ -65,28 +57,6 @@ The current dataset (as of March 3, 2025) has some coverage limitations:
 pip3 install -r requirements.txt
 ```
 
-## Usage
-
-### Loading the Pre-trained Model
-
-```python
-import torch
-from model import GrayscaleCNN  # Import your model definition
-
-# Initialize model
-model = GrayscaleCNN(num_classes=15)
-
-# Load pre-trained weights
-model.load_state_dict(torch.load('model.pth'))
-model.eval()
-
-# Process a grayscale image
-# [Your code to load and preprocess the image]
-with torch.no_grad():
-    keypoints = model(image_tensor)
-
-# keypoints shape: [1, 15, 2] where 15 is the number of keypoints and 2 is (x,y) coordinates
-```
 
 ## Training
 
