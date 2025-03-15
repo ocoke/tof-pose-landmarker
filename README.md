@@ -1,4 +1,4 @@
-# ToF Pose Landmarker
+# ToF Pose Landmarker Estimation
 
 A pose landmark estimation model trained for grayscale images captured by ToF (Time-of-Flight) cameras.
 
