@@ -6,9 +6,10 @@ A pose landmark estimation model trained for grayscale images captured by ToF (T
 
 ### Data Capture
 
-For this project, we would use a ToF camera and a RGB camera at the same time to capture both RGB frames and depth frames.
+For this project, we would use a ToF camera (from Arducam) and a RGB camera (webcam) at the same time to capture both RGB frames and depth frames.
 
-In the room, there would be a person standing in front of the camera, and an ArUco marker would be placed on the wall behind the person. The ArUco marker would be used to calibrate the ToF camera and the RGB camera. 
+For data collection, in the room, there would be a person standing in front of the camera, and an ArUco marker would be placed on the wall behind the person (or anywhere else that is in the frame).
+The ArUco marker would be used to calibrate the ToF camera and the RGB camera so that the annotations from the RGB camera can be directly applied to the depth frames.
 Parts of the ArUco marker would be covered with retroreflective tape to reflect the infrared light emitted by the ToF camera.
 
 The data from the RGB camera would be passed into Mediapipe Pose Landmarker model to get the annotations for the RGB frames. 
