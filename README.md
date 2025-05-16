@@ -1,83 +1,28 @@
-# ToF Pose Landmarker Estimation
+# Time-of-Flight Pose Landmarker Estimation
 
 A pose landmark estimation model trained for grayscale images captured by ToF (Time-of-Flight) cameras.
 
-## Overview
+## Project Overview
 
-This project addresses the domain shift problem in traditional pose landmark models when working with grayscale ToF camera images. By directly training on ToF camera data with its inherent noise characteristics, this model provides more accurate pose estimation for grayscale depth-sensing applications.
+### Data Capture
 
-## Features
+For this project, we would use a ToF camera and a RGB camera at the same time to capture both RGB frames and depth frames.
 
-- Optimized for grayscale images from ToF cameras
-- Reduced keypoint set designed for practical ToF camera applications
-- Noise-tolerant architecture trained directly on ToF camera data
-- PyTorch-based implementation
+In the room, there would be a person standing in front of the camera, and an ArUco marker would be placed on the wall behind the person. The ArUco marker would be used to calibrate the ToF camera and the RGB camera. 
+Parts of the ArUco marker would be covered with retroreflective tape to reflect the infrared light emitted by the ToF camera.
 
-## Keypoint Structure
+The data from the RGB camera would be passed into Mediapipe Pose Landmarker model to get the annotations for the RGB frames. 
+The annotations would be applied to the depth frames to get the annotations for the depth frames.
 
-This model uses a modified keypoint structure with 15 landmarks, adapted from the original MediaPipe pose landmarker:
+### Data Preparation
 
-| Index | Keypoint       | MediaPipe Original Index |
-|-------|----------------|---------------|
-| 0     | Head           | 0             |
-| 1     | Left Shoulder  | 11            |
-| 2     | Right Shoulder | 12            |
-| 3     | Left Elbow     | 13            |
-| 4     | Right Elbow    | 14            |
-| 5     | Left Hand      | 19            |
-| 6     | Right Hand     | 20            |
-| 7     | Left Hip       | 23            |
-| 8     | Right Hip      | 24            |
-| 9     | Left Knee      | 25            |
-| 10    | Right Knee     | 26            |
-| 11    | Left Ankle     | 27            |
-| 12    | Right Ankle    | 28            |
-| 13    | Left Foot      | 31            |
-| 14    | Right Foot     | 32            |
+TODO.
 
+### Model Training
 
-## Dataset
+TODO.
 
-- ~1,000 training samples (as of March 2025)
-- Directly captured from ToF cameras with inherent noise
-- Annotations in a MediaPipe-like format
+### Model Evaluation
 
-### Current Dataset Limitations
+TODO.
 
-The current dataset (as of March 3, 2025) has some coverage limitations:
-- Insufficient data for feet poses
-- Limited upper angle views
-- Not covering all possible human poses
-
-## Requirements
-
-- Suggested Python version: `3.11.9+`
-
-```bash
-pip3 install -r requirements.txt
-```
-
-
-## Training
-
-The model is trained using MSE loss on landmark positions. To train on your own dataset:
-
-1. Organize your data:
-   - Place grayscale images in an `images` directory
-   - Place corresponding JSON annotations in an `annotations` directory
-   - Ensure each annotation JSON file has the same base filename as its image
-
-2. Run the training script:
-
-```bash
-python train.py
-```
-
-See the full training code in the repository for detailed implementation.
-
-## Future Improvements
-
-- Expand dataset with more varied poses, especially for feet and upper angles
-- Implement data augmentation to improve generalization
-- Explore attention mechanisms for better keypoint localization
-- Add temporal consistency for video streams
