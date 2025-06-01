@@ -196,6 +196,8 @@ class RealtimePoseEstimatorMediaPipe:
                     # or uint16. Normalizing ensures it's viewable as a grayscale image.
                     cv2.normalize(confidence_display, confidence_display, 0, 255, cv2.NORM_MINMAX)
                     confidence_display = confidence_display.astype(np.uint8)
+                    if ROTATE_IMAGE:
+                        confidence_display = cv2.rotate(confidence_display, cv2.ROTATE_180)
                     cv2.imshow(confidence_window_name, confidence_display)
                 
                 # --- Cleanup and Key Handling ---
