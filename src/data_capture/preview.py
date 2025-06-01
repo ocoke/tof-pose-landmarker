@@ -99,7 +99,7 @@ class RealtimePoseEstimatorMediaPipe:
         if ROTATE_IMAGE:
             bgr_frame = cv2.rotate(bgr_frame, cv2.ROTATE_180)
         return bgr_frame
-
+    
     def run(self):
         self.setup_camera()
 
@@ -107,13 +107,12 @@ class RealtimePoseEstimatorMediaPipe:
         confidence_window_name = "Confidence Map"
 
         cv2.namedWindow(main_window_name, cv2.WINDOW_AUTOSIZE)
-        # Create trackbar for confidence threshold
         cv2.createTrackbar(
-            "Confidence Thr",       # Trackbar label
-            main_window_name,       # Window to attach to
-            self.confidence_threshold, # Initial value
-            255,                    # Max value for threshold (assuming confidence data is 0-255)
-            self.on_confidence_threshold_changed # Callback function
+            "Confidence Thr",
+            main_window_name,
+            self.confidence_threshold,
+            255, 
+            self.on_confidence_threshold_changed
         )
         
         print("\nStarting real-time MediaPipe Pose estimation with confidence filtering.")
@@ -123,57 +122,56 @@ class RealtimePoseEstimatorMediaPipe:
 
         try:
             while True:
-                frame_data = self.cam.requestFrame(200) # 200ms timeout
+                frame_data = self.cam.requestFrame(200)
                 if frame_data is None:
-                    time.sleep(0.01) 
+                    time.sleep(0.01)
                     continue
 
-                if not isinstance(frame_data, ac.DepthData): # Ensure we have DepthData object
+                if not isinstance(frame_data, ac.DepthData):
                     self.cam.releaseFrame(frame_data)
                     continue
 
                 depth_buf = frame_data.depth_data
-                confidence_buf = frame_data.confidence_data # Get confidence data
+                confidence_buf_original = frame_data.confidence_data # Original orientation
 
                 if depth_buf is None or depth_buf.size == 0:
                     print("Warning: Received empty depth buffer.")
                     self.cam.releaseFrame(frame_data)
                     continue
                 
-                bgr_frame = self.process_camera_frame(depth_buf)
+                # bgr_frame is already rotated inside process_camera_frame if ROTATE_IMAGE is True
+                bgr_frame = self.process_camera_frame(depth_buf) 
                 if bgr_frame is None or bgr_frame.size == 0:
                     print("Warning: Processed frame is empty.")
                     self.cam.releaseFrame(frame_data)
                     continue
 
-                # --- Apply Confidence Masking ---
-                # This filtering is applied to bgr_frame before MediaPipe and display.
-                if confidence_buf is not None:
-                    # Ensure confidence_buf has compatible dimensions for broadcasting/masking
-                    if confidence_buf.shape[0] == bgr_frame.shape[0] and \
-                       confidence_buf.shape[1] == bgr_frame.shape[1]:
-                        # Apply mask: pixels with confidence < threshold become black
-                        bgr_frame[confidence_buf < self.confidence_threshold] = (0, 0, 0)
+                # --- Prepare confidence_buf to match bgr_frame's orientation ---
+                current_confidence_buf_for_processing = None
+                if confidence_buf_original is not None:
+                    current_confidence_buf_for_processing = confidence_buf_original.copy()
+                    if ROTATE_IMAGE: # If bgr_frame was rotated, rotate confidence_buf too
+                        current_confidence_buf_for_processing = cv2.rotate(current_confidence_buf_for_processing, cv2.ROTATE_180)
+                
+                # --- Apply Confidence Masking using the correctly oriented confidence buffer ---
+                if current_confidence_buf_for_processing is not None:
+                    if current_confidence_buf_for_processing.shape[0] == bgr_frame.shape[0] and \
+                       current_confidence_buf_for_processing.shape[1] == bgr_frame.shape[1]:
+                        bgr_frame[current_confidence_buf_for_processing < self.confidence_threshold] = (0, 0, 0)
                     else:
-                        print(f"Warning: Confidence buffer shape {confidence_buf.shape} "
-                              f"mismatches frame shape {bgr_frame.shape[:2]}. Skipping confidence filtering.")
-                # else: # Optional: if confidence_buf is None
-                #    print("No confidence data available for filtering this frame.")
-
-
-                # Create a copy for drawing landmarks, as bgr_frame itself might be used as input for MP
+                        print(f"Warning: Confidence buffer (shape: {current_confidence_buf_for_processing.shape}) "
+                              f"mismatches frame shape ({bgr_frame.shape[:2]}). Skipping confidence filtering.")
+                
                 annotated_frame = bgr_frame.copy()
 
                 # --- MediaPipe Processing ---
-                # Convert the (potentially filtered) BGR frame to RGB for MediaPipe
                 rgb_frame_for_mp = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
                 rgb_frame_for_mp.flags.writeable = False
                 results = self.pose.process(rgb_frame_for_mp)
-                # rgb_frame_for_mp.flags.writeable = True # Not strictly needed as we draw on annotated_frame
 
                 if results.pose_landmarks:
                     mp_drawing.draw_landmarks(
-                        image=annotated_frame, # Draw on the annotated_frame
+                        image=annotated_frame,
                         landmark_list=results.pose_landmarks,
                         connections=mp_pose.POSE_CONNECTIONS,
                         landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
@@ -190,26 +188,20 @@ class RealtimePoseEstimatorMediaPipe:
                 cv2.imshow(main_window_name, annotated_frame)
 
                 # --- Display Confidence Map (Optional) ---
-                if self.show_confidence_map_window and confidence_buf is not None:
-                    confidence_display = confidence_buf.copy()
-                    # Normalize for display. Arducam confidence is often uint8 (0-255)
-                    # or uint16. Normalizing ensures it's viewable as a grayscale image.
+                # Uses current_confidence_buf_for_processing which is already correctly rotated
+                if self.show_confidence_map_window and current_confidence_buf_for_processing is not None:
+                    confidence_display = current_confidence_buf_for_processing.copy() # Already rotated if needed
                     cv2.normalize(confidence_display, confidence_display, 0, 255, cv2.NORM_MINMAX)
                     confidence_display = confidence_display.astype(np.uint8)
-                    if ROTATE_IMAGE:
-                        confidence_display = cv2.rotate(confidence_display, cv2.ROTATE_180)
+                    # No separate rotation needed here as current_confidence_buf_for_processing is already oriented
                     cv2.imshow(confidence_window_name, confidence_display)
                 
-                # --- Cleanup and Key Handling ---
                 self.cam.releaseFrame(frame_data)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     print("Quitting...")
                     break
-        except Exception as e:
-            print(f"An error occurred during execution: {e}")
-            import traceback
-            traceback.print_exc() 
+        # ... (rest of the try-finally block remains the same) ...
         finally:
             print("Stopping camera and cleaning up...")
             if hasattr(self, 'pose') and self.pose:
@@ -217,10 +209,8 @@ class RealtimePoseEstimatorMediaPipe:
             if hasattr(self, 'cam'):
                 self.cam.stop()
                 self.cam.close()
-            
-            cv2.destroyAllWindows() # Destroys all OpenCV windows, including main and confidence map
+            cv2.destroyAllWindows()
             print("Cleanup complete.")
-
 # --- Main Execution ---
 if __name__ == "__main__":
     # Ensure CAMERA_RANGE at the top is set appropriately in MILLIMETERS.
