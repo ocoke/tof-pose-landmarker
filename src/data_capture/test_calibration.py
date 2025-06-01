@@ -295,7 +295,8 @@ class DualCameraPoseMapper:
                         if processed_tof_confidence_gray is not None: # Use processed confidence for ArUco
                             corners_rgb, ids_rgb, _, _, _ = self.detect_aruco(rgb_frame_original, self.rgb_camera_matrix, self.rgb_dist_coeffs)
                             corners_tof, ids_tof, _, _, _ = self.detect_aruco(processed_tof_confidence_gray, self.tof_camera_matrix, self.tof_dist_coeffs)
-
+                            print(ids_rgb)
+                            print(ids_tof)
                             if ids_rgb is not None and ids_tof is not None:
                                 common_ids_found = set(ids_rgb.flatten()).intersection(set(ids_tof.flatten()))
                                 if ARUCO_CALIBRATION_MARKER_ID in common_ids_found:
