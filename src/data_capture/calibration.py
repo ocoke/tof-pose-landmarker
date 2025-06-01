@@ -14,7 +14,7 @@ TOF_CONFIDENCE_THRESHOLD = 30 # Default confidence for filtering ToF data (0-255
 # and try to get amplitude through other means if needed.
 # For now, let's assume DEPTH_AMPLITUDE will give us depth and amplitude,
 # and we'll still try to access confidence if it comes along.
-TOF_FRAME_TYPE = ac.FrameType.DEPTH_AMPLITUDE # Request Depth and Amplitude
+TOF_FRAME_TYPE = ac.FrameType.DEPTH # Request Depth and Amplitude
 
 # RGB Webcam
 WEBCAM_INDEX = 8  # Adjust this to your RGB webcam's index (e.g., 0, 1, 2)
