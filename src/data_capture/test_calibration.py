@@ -287,6 +287,8 @@ class DualCameraPoseMapper:
                         ly = landmark.y * self.webcam_height
                         mp_landmarks_2d_rgb_pixels.append((lx, ly))
 
+                    print(f"DEBUG: MediaPipe found {len(mp_landmarks_2d_rgb_pixels)} visible landmarks in RGB frame.")
+
                     # --- ArUco Based Calibration Attempt ---
                     current_time = time.time()
                     if current_time - self.last_calibration_time > self.calibration_interval or self.homography_rgb_to_tof is None:
@@ -311,12 +313,14 @@ class DualCameraPoseMapper:
                                                 self.homography_rgb_to_tof = H
                                                 self.last_calibration_time = current_time
                                                 print(f"INFO: Homography calculated using ArUco marker ID {ARUCO_CALIBRATION_MARKER_ID}.")
-                                            # else: print("DEBUG: Homography calculation failed.")
-                                # else: print(f"DEBUG: Calib marker ID {ARUCO_CALIBRATION_MARKER_ID} not common or not found.")
-                            # else: print("DEBUG: ArUco not detected in one/both views for calib.")
-                        # else: print("DEBUG: ToF confidence map unavailable for ArUco calib.")
+                                                print(f"DEBUG: Calculated Homography Matrix H:\n{self.homography_rgb_to_tof}")
+                                            else: print("DEBUG: Homography calculation failed.")
+                                else: print(f"DEBUG: Calib marker ID {ARUCO_CALIBRATION_MARKER_ID} not common or not found.")
+                            else: print("DEBUG: ArUco not detected in one/both views for calib.")
+                        else: print("DEBUG: ToF confidence map unavailable for ArUco calib.")
                 
                 # --- Map MediaPipe Landmarks to ToF Display Image (which is tof_display_bgr) ---
+                print(f"DEBUG: Checking conditions for mapping: Has Homography? {self.homography_rgb_to_tof is not None}. Num RGB Landmarks: {len(mp_landmarks_2d_rgb_pixels)}")
                 if self.homography_rgb_to_tof is not None and mp_landmarks_2d_rgb_pixels:
                     landmarks_rgb_np = np.array([mp_landmarks_2d_rgb_pixels], dtype=np.float32)
                     try:
