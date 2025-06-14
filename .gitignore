@@ -5,6 +5,7 @@
 *.swp
 loss_graph.png
 __pycache__
+test_src/
 
 .idea/
 

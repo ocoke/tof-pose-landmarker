@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import time
+from camera_calibration import CameraCalibrationManager
 
 # --- Configuration ---
 # ToF Camera
@@ -20,11 +21,6 @@ WEBCAM_HEIGHT = 480
 MP_MODEL_COMPLEXITY = 1
 MP_MIN_DETECTION_CONFIDENCE = 0.75
 MP_MIN_TRACKING_CONFIDENCE = 0.75
-
-# ArUco Marker Configuration
-ARUCO_DICTIONARY_ID = cv2.aruco.DICT_6X6_250
-ARUCO_MARKER_SIZE_METERS = 0.18 # For pose estimation, not directly for homography from corners
-ARUCO_CALIBRATION_MARKER_ID = 777 # The specific marker ID to look for calibration
 
 # --- MediaPipe Setup ---
 mp_pose = mp.solutions.pose
@@ -50,37 +46,24 @@ class DualCameraPoseMapper:
             min_tracking_confidence=MP_MIN_TRACKING_CONFIDENCE)
         print(f"MediaPipe Pose initialized.")
 
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICTIONARY_ID)
-        try:
-            self.aruco_params = cv2.aruco.DetectorParameters_create()
-            print("Using cv2.aruco.DetectorParameters_create()")
-        except AttributeError:
-            print("cv2.aruco.DetectorParameters_create() not found, using cv2.aruco.DetectorParameters() (older OpenCV compatibility).")
-            self.aruco_params = cv2.aruco.DetectorParameters()
-        print(f"ArUco initialized with dictionary ID: {ARUCO_DICTIONARY_ID}")
+        # Initialize camera calibration manager instead of real-time ArUco detection
+        self.calibration_manager = CameraCalibrationManager("camera_calibration.json")
+        if self.calibration_manager.is_loaded:
+            print("✅ Pre-computed camera calibration loaded successfully")
+            cal_info = self.calibration_manager.get_calibration_info()
+            if cal_info and 'calibration_quality' in cal_info:
+                quality = cal_info['calibration_quality']
+                print(f"📊 Calibration quality: {quality.get('reprojection_error', 'N/A'):.3f}px error, {quality.get('coverage_percentage', 'N/A'):.1f}% coverage")
+        else:
+            print("⚠️  No pre-computed calibration found - landmarks will not be transformed to ToF coordinates")
+            print("   Please run the ArUco calibration setup first to generate camera_calibration.json")
 
-        self.homography_rgb_to_tof = None
-        self.last_calibration_time = 0
-        self.calibration_interval = 2 # seconds, try to recalibrate more frequently for testing
-
-        # --- Placeholder Intrinsics ---
-        # ** CRITICAL: Replace these with YOUR ACTUAL CALIBRATED values for accurate 3D work later **
-        # ToF camera (resolution 240x180 for confidence/amplitude map used in ArUco)
-        # These values are just rough estimates.
-        tof_fx, tof_fy = 200.0, 200.0 # Example focal lengths
-        tof_cx, tof_cy = 240 / 2.0, 180 / 2.0
-        self.tof_camera_matrix = np.array([[tof_fx, 0, tof_cx],
-                                           [0, tof_fy, tof_cy],
-                                           [0, 0, 1.0]], dtype=np.float32)
-        self.tof_dist_coeffs = np.zeros((5,1), dtype=np.float32) # k1,k2,p1,p2,k3
-
-        # RGB Webcam (update after webcam resolution is confirmed)
-        rgb_fx, rgb_fy = float(self.webcam_width * 0.8), float(self.webcam_width * 0.8) # Common heuristic
-        rgb_cx, rgb_cy = self.webcam_width / 2.0, self.webcam_height / 2.0
-        self.rgb_camera_matrix = np.array([[rgb_fx, 0, rgb_cx],
-                                           [0, rgb_fy, rgb_cy],
-                                           [0, 0, 1.0]], dtype=np.float32)
-        self.rgb_dist_coeffs = np.zeros((5,1), dtype=np.float32)
+        # Landmark transformation tracking
+        self.last_transformation_stats = {
+            'total_landmarks': 0,
+            'valid_landmarks': 0,
+            'transformation_success_rate': 0.0
+        }
 
     def on_confidence_threshold_changed(self, value_from_trackbar): # Not used currently
         self.tof_confidence_threshold = value_from_trackbar
@@ -124,12 +107,6 @@ class DualCameraPoseMapper:
             print(f"Webcam actual resolution {actual_w}x{actual_h}, updating.")
             self.webcam_width, self.webcam_height = actual_w, actual_h
         print(f"RGB Webcam opened: {self.webcam_width}x{self.webcam_height}")
-        
-        # Update RGB camera matrix with actual dimensions
-        self.rgb_camera_matrix[0, 2] = self.webcam_width / 2.0
-        self.rgb_camera_matrix[1, 2] = self.webcam_height / 2.0
-        self.rgb_camera_matrix[0, 0] = float(self.webcam_width * 0.8)
-        self.rgb_camera_matrix[1, 1] = float(self.webcam_width * 0.8) # Assuming square pixels and fx~fy
 
     def _ensure_240x180_bgr(self, frame, source_name="Unknown"):
         if frame is None:
@@ -219,36 +196,21 @@ class DualCameraPoseMapper:
             conf_proc = cv2.rotate(conf_proc, cv2.ROTATE_180)
         return self._ensure_240x180_gray(conf_proc, "Confidence")
 
-    def detect_aruco(self, image_for_detection, camera_matrix, dist_coeffs):
-        if image_for_detection is None:
-            # print("detect_aruco: input image is None")
-            return None, None, None, None, None
+    def transform_landmarks_to_tof(self, rgb_landmarks):
+        """Transform RGB landmarks to ToF coordinates using pre-computed calibration."""
+        if not self.calibration_manager.is_loaded:
+            return [], []
         
-        # ArUco detection expects a single channel grayscale image
-        if len(image_for_detection.shape) == 3 and image_for_detection.shape[2] == 3:
-            gray_for_detection = cv2.cvtColor(image_for_detection, cv2.COLOR_BGR2GRAY)
-        elif len(image_for_detection.shape) == 2:
-            gray_for_detection = image_for_detection
-        else:
-            # print(f"detect_aruco: unexpected image shape {image_for_detection.shape}")
-            return None, None, None, None, None
-
-        corners, ids, rejected = cv2.aruco.detectMarkers(
-            gray_for_detection, self.aruco_dict, parameters=self.aruco_params)
+        transformed_landmarks, valid_indices = self.calibration_manager.transform_landmarks_rgb_to_tof(rgb_landmarks)
         
-        rvecs, tvecs = None, None
-        if ids is not None:
-            if camera_matrix is not None and dist_coeffs is not None:
-                try:
-                    rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                        corners, ARUCO_MARKER_SIZE_METERS, camera_matrix, dist_coeffs)
-                except cv2.error as e:
-                    # print(f"cv2.error in estimatePoseSingleMarkers: {e}")
-                    pass 
-                except Exception as e:
-                    # print(f"Unexpected error in estimatePoseSingleMarkers: {e}")
-                    pass
-        return corners, ids, rejected, rvecs, tvecs
+        # Update transformation statistics
+        self.last_transformation_stats = {
+            'total_landmarks': len(rgb_landmarks),
+            'valid_landmarks': len(transformed_landmarks),
+            'transformation_success_rate': len(transformed_landmarks) / len(rgb_landmarks) if len(rgb_landmarks) > 0 else 0.0
+        }
+        
+        return transformed_landmarks, valid_indices
 
     def run(self):
         self.setup_cameras()
@@ -336,58 +298,28 @@ class DualCameraPoseMapper:
                         ly = landmark.y * self.webcam_height
                         mp_landmarks_2d_rgb_pixels.append((lx, ly))
 
-                    # --- ArUco Based Calibration Attempt ---
-                    current_time = time.time()
-                    if current_time - self.last_calibration_time > self.calibration_interval or self.homography_rgb_to_tof is None:
-                        # print("Attempting calibration...")
-                        if processed_tof_confidence_map is not None:
-                            corners_rgb, ids_rgb, _, _, _ = self.detect_aruco(rgb_frame_original, self.rgb_camera_matrix, self.rgb_dist_coeffs)
-                            corners_tof, ids_tof, _, _, _ = self.detect_aruco(processed_tof_confidence_map, self.tof_camera_matrix, self.tof_dist_coeffs)
-
-                            if ids_rgb is not None and ids_tof is not None:
-                                common_ids_found = set(ids_rgb.flatten()).intersection(set(ids_tof.flatten()))
-                                if ARUCO_CALIBRATION_MARKER_ID in common_ids_found:
-                                    idx_rgb_list = np.where(ids_rgb.flatten() == ARUCO_CALIBRATION_MARKER_ID)[0]
-                                    idx_tof_list = np.where(ids_tof.flatten() == ARUCO_CALIBRATION_MARKER_ID)[0]
-                                    
-                                    if len(idx_rgb_list) > 0 and len(idx_tof_list) > 0:
-                                        idx_rgb = idx_rgb_list[0]
-                                        idx_tof = idx_tof_list[0]
-
-                                        rgb_marker_pts_for_H = corners_rgb[idx_rgb][0].astype(np.float32) # Shape (4,2)
-                                        tof_marker_pts_for_H = corners_tof[idx_tof][0].astype(np.float32) # Shape (4,2)
-                                        
-                                        if len(rgb_marker_pts_for_H) == 4 and len(tof_marker_pts_for_H) == 4:
-                                            H, status = cv2.findHomography(rgb_marker_pts_for_H, tof_marker_pts_for_H, cv2.RANSAC, 5.0)
-                                            if H is not None:
-                                                self.homography_rgb_to_tof = H
-                                                self.last_calibration_time = current_time
-                                                print(f"INFO: Homography calculated and updated using ArUco marker ID {ARUCO_CALIBRATION_MARKER_ID}.")
-                                            # else: print("DEBUG: Homography calculation failed (findHomography returned None).")
-                                # else: print(f"DEBUG: Calibration marker ID {ARUCO_CALIBRATION_MARKER_ID} not in common IDs or not found in both views.")
-                            # else: print("DEBUG: ArUco markers not detected in one or both views for calibration.")
-                        # else: print("DEBUG: ToF confidence map not available for ArUco detection.")
-                
-                # --- Map MediaPipe Landmarks to ToF Display Image ---
-                if self.homography_rgb_to_tof is not None and mp_landmarks_2d_rgb_pixels:
-                    # print(f"DEBUG: Homography found, {len(mp_landmarks_2d_rgb_pixels)} RGB landmarks to transform.")
-                    landmarks_rgb_np = np.array([mp_landmarks_2d_rgb_pixels], dtype=np.float32)
-                    try:
-                        transformed_landmarks = cv2.perspectiveTransform(landmarks_rgb_np, self.homography_rgb_to_tof)
-                        if transformed_landmarks is not None:
-                            # print(f"DEBUG: Transformed landmarks (first 3): {transformed_landmarks[0][:3]}")
-                            for pt_idx, pt_tof in enumerate(transformed_landmarks[0]):
-                                x, y = int(pt_tof[0]), int(pt_tof[1])
-                                if 0 <= x < tof_display_bgr.shape[1] and 0 <= y < tof_display_bgr.shape[0]:
-                                    cv2.circle(tof_display_bgr, (x, y), 3, (0, 255, 0), -1) # Green circle
-                                    # cv2.putText(tof_display_bgr, str(pt_idx), (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200,255,200), 1)
-                        # else: print("DEBUG: perspectiveTransform returned None.")
-                    except cv2.error as e:
-                        print(f"ERROR: cv2.perspectiveTransform failed: {e}")
-                        self.homography_rgb_to_tof = None # Invalidate homography if transform fails
-                # elif self.homography_rgb_to_tof is None and mp_landmarks_2d_rgb_pixels:
-                    # print("DEBUG: Homography not yet available for mapping landmarks.")
-
+                    # --- Transform MediaPipe Landmarks to ToF Coordinates ---
+                    if mp_landmarks_2d_rgb_pixels and self.calibration_manager.is_loaded:
+                        transformed_landmarks, valid_indices = self.transform_landmarks_to_tof(mp_landmarks_2d_rgb_pixels)
+                        
+                        # Draw transformed landmarks on ToF display
+                        for i, (x, y) in enumerate(transformed_landmarks):
+                            x, y = int(x), int(y)
+                            if 0 <= x < tof_display_bgr.shape[1] and 0 <= y < tof_display_bgr.shape[0]:
+                                cv2.circle(tof_display_bgr, (x, y), 3, (0, 255, 0), -1)  # Green circle
+                                # Optional: show landmark index
+                                # cv2.putText(tof_display_bgr, str(valid_indices[i]), (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200,255,200), 1)
+                        
+                        # Display transformation statistics
+                        stats = self.last_transformation_stats
+                        if stats['total_landmarks'] > 0:
+                            success_rate = stats['transformation_success_rate'] * 100
+                            status_text = f"Landmarks: {stats['valid_landmarks']}/{stats['total_landmarks']} ({success_rate:.1f}%)"
+                            cv2.putText(tof_display_bgr, status_text, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    elif mp_landmarks_2d_rgb_pixels and not self.calibration_manager.is_loaded:
+                        # Show warning when landmarks detected but no calibration available
+                        warning_text = "No calibration - landmarks not transformed"
+                        cv2.putText(tof_display_bgr, warning_text, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 100, 255), 1)
 
                 # --- Add Display Source Text and FPS ---
                 cv2.putText(tof_display_bgr, display_source_text, (5, tof_display_bgr.shape[0] - 5), 
@@ -413,9 +345,13 @@ class DualCameraPoseMapper:
                     print("Quitting...")
                     break
                 elif key == ord('c'):
-                    self.homography_rgb_to_tof = None 
-                    self.last_calibration_time = 0 
-                    print("INFO: Calibration reset. Will attempt recalibration on next valid detection...")
+                    # Reload calibration
+                    print("INFO: Reloading calibration...")
+                    self.calibration_manager.load_calibration()
+                    if self.calibration_manager.is_loaded:
+                        print("✅ Calibration reloaded successfully")
+                    else:
+                        print("❌ Failed to reload calibration")
 
         finally:
             print("Stopping cameras and cleaning up...")
@@ -430,10 +366,11 @@ class DualCameraPoseMapper:
             print("Cleanup complete.")
 
 if __name__ == "__main__":
-    print("Starting Dual Camera Pose Mapper...")
+    print("Starting Dual Camera Pose Mapper with Pre-computed Calibration...")
     print("Ensure your Arducam ToF camera is connected via CSI.")
     print(f"Ensure your RGB Webcam is connected and accessible at index: {WEBCAM_INDEX}")
-    print("Ensure an ArUco marker (e.g., ID 0 from DICT_6X6_250) is visible to both cameras for calibration.")
+    print("Calibration file: camera_calibration.json (run ArUco calibration setup if missing)")
+    print("Press 'q' to quit, 'c' to reload calibration")
     print("---")
     try:
         estimator = DualCameraPoseMapper()
