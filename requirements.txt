@@ -4,3 +4,4 @@ torchvision==0.21.0
 opencv-python==4.11.0.86
 pillow==11.1.0
 matplotlib==3.10.0
+mediapipe==0.10.11
