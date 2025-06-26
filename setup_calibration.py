@@ -53,7 +53,7 @@ def generate_aruco_marker():
     
     filename = "aruco_marker_77_calibration.png"
     cv2.imwrite(filename, final_img)
-    print(f"✅ ArUco marker saved as: {filename}")
+    print(f"[SUCCESS]  ArUco marker saved as: {filename}")
     print(f"   Print this marker and place it where both cameras can see it")
     
     return filename
@@ -111,7 +111,7 @@ def main():
         
         success = calibration_setup.save_calibration(sample_homography, "camera_calibration.json")
         if success:
-            print("✅ Sample calibration created for testing")
+            print("[SUCCESS]  Sample calibration created for testing")
             print("   Replace with real calibration data when cameras are available")
         
         return
@@ -125,7 +125,7 @@ def main():
         print("❌ Failed to load test images")
         return
     
-    print("✅ Test images loaded")
+    print("[SUCCESS]  Test images loaded")
     
     # Calculate homography
     homography = calibration_setup.calculate_homography_from_frames(rgb_frame, tof_frame)

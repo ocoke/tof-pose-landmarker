@@ -36,8 +36,8 @@ class CameraCalibrationManager:
             self.valid_region = self.calibration_data['valid_region_image1']
             self.is_loaded = True
             
-            print(f"✅ Calibration loaded from {self.calibration_file}")
-            print(f"📊 Quality metrics:")
+            print(f"[SUCCESS] Calibration loaded from {self.calibration_file}")
+            print(f"[INFO] Quality metrics:")
             quality = self.calibration_data['calibration_quality']
             print(f"   - Valid points: {quality['num_valid_points']}")
             print(f"   - Coverage: {quality['coverage_percentage']:.1f}%")
@@ -46,11 +46,11 @@ class CameraCalibrationManager:
             return True
             
         except FileNotFoundError:
-            print(f"⚠️  Calibration file {self.calibration_file} not found")
+            print(f"[WARNING] Calibration file {self.calibration_file} not found")
             print(f"   Please run calibration first")
             return False
         except Exception as e:
-            print(f"❌ Error loading calibration: {e}")
+            print(f"[ERROR] Error loading calibration: {e}")
             return False
     
     def is_point_in_valid_region(self, x, y):
@@ -108,7 +108,7 @@ class CameraCalibrationManager:
             numpy.ndarray: Transformed landmarks, or empty array if transformation fails
         """
         if not self.is_loaded:
-            print("❌ Calibration not loaded")
+            print("[ERROR] Calibration not loaded")
             return np.array([])
         
         landmarks = np.array(landmarks, dtype=np.float32)
@@ -119,7 +119,7 @@ class CameraCalibrationManager:
         valid_landmarks, valid_indices = self.filter_landmarks_by_region(landmarks)
         
         if len(valid_landmarks) == 0:
-            print("⚠️  No landmarks in valid calibration region")
+            print("[WARNING] No landmarks in valid calibration region")
             return np.array([])
         
         # Transform valid landmarks
@@ -132,7 +132,7 @@ class CameraCalibrationManager:
             return transformed_landmarks, valid_indices
             
         except Exception as e:
-            print(f"❌ Error transforming landmarks: {e}")
+            print(f"[ERROR] Error transforming landmarks: {e}")
             return np.array([]), np.array([])
     
     def get_calibration_info(self):
@@ -151,18 +151,18 @@ def integrate_with_existing_calibration():
     """
     Example of how to integrate this with the existing calibration.py
     """
-    print("🔧 Camera Calibration Integration Example")
+    print("[INFO] Camera Calibration Integration Example")
     print("=" * 50)
     
     # Initialize calibration manager
     calib_manager = CameraCalibrationManager()
     
     if not calib_manager.is_loaded:
-        print("❌ No calibration available. Please run calibration first.")
+        print("[ERROR] No calibration available. Please run calibration first.")
         return
     
     # Example: Simulate MediaPipe landmarks
-    print("\n🧪 Testing with simulated MediaPipe landmarks...")
+    print("\n[TEST] Testing with simulated MediaPipe landmarks...")
     
     # These would be real MediaPipe landmarks in your application
     # Format: [(x, y), (x, y), ...] in RGB camera coordinates
@@ -175,14 +175,14 @@ def integrate_with_existing_calibration():
         (6000, 4000),   # This one might be outside valid region
     ]
     
-    print(f"📍 Original landmarks: {len(simulated_landmarks)} points")
+    print(f"[INFO] Original landmarks: {len(simulated_landmarks)} points")
     
     # Transform landmarks
     transformed_landmarks, valid_indices = calib_manager.transform_landmarks(simulated_landmarks)
     
     if len(transformed_landmarks) > 0:
-        print(f"✅ Successfully transformed {len(transformed_landmarks)} landmarks")
-        print(f"📊 Transformation results:")
+        print(f"[SUCCESS] Successfully transformed {len(transformed_landmarks)} landmarks")
+        print(f"[INFO] Transformation results:")
         
         for i, (orig_idx, transformed) in enumerate(zip(valid_indices, transformed_landmarks)):
             original = simulated_landmarks[orig_idx]
@@ -192,17 +192,17 @@ def integrate_with_existing_calibration():
         all_indices = set(range(len(simulated_landmarks)))
         filtered_indices = all_indices - set(valid_indices)
         if filtered_indices:
-            print(f"⚠️  Filtered out {len(filtered_indices)} landmarks outside valid region:")
+            print(f"[WARNING] Filtered out {len(filtered_indices)} landmarks outside valid region:")
             for idx in filtered_indices:
                 orig = simulated_landmarks[idx]
                 print(f"   Landmark {idx}: ({orig[0]:.0f},{orig[1]:.0f}) - outside valid region")
     
     else:
-        print("❌ No landmarks could be transformed")
+        print("[ERROR] No landmarks could be transformed")
     
     # Show calibration info
     info = calib_manager.get_calibration_info()
-    print(f"\n📋 Calibration Info:")
+    print(f"\n[INFO] Calibration Info:")
     print(f"   Valid region: {info['valid_region']['width']:.0f}x{info['valid_region']['height']:.0f} pixels")
     print(f"   Quality: {info['calibration_quality']['coverage_percentage']:.1f}% coverage")
 
@@ -256,21 +256,21 @@ class DualCameraPoseMapper:
     with open("calibration_integration_example.py", "w") as f:
         f.write(code_snippet)
     
-    print(f"📝 Integration code saved to: calibration_integration_example.py")
+    print(f"[INFO] Integration code saved to: calibration_integration_example.py")
 
 def main():
-    print("🎯 Camera Calibration Utils")
+    print("[INFO] Camera Calibration Utils")
     print("=" * 40)
     
     # Test the integration
     integrate_with_existing_calibration()
     
     # Create integration example
-    print(f"\n📝 Creating integration example...")
+    print(f"\n[INFO] Creating integration example...")
     create_calibration_integration_code()
     
-    print(f"\n✅ Calibration utilities ready!")
-    print(f"📁 Files created:")
+    print(f"\n[SUCCESS] Calibration utilities ready!")
+    print(f"[INFO] Files created:")
     print(f"   - camera_calibration.json (calibration data)")
     print(f"   - calibration_integration_example.py (integration code)")
     print(f"   - valid_region_image1.jpg, valid_region_image2.jpg (visualizations)")
