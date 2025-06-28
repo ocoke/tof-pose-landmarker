@@ -149,12 +149,12 @@ class WebcamToFPoseMapper:
             print(f"[ERROR] Failed to initialize MediaPipe: {e}")
             return False
     
-    def capture_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    def capture_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Capture frames from webcam and ToF camera.
         
         Returns:
-            tuple: (webcam_frame, tof_frame, confidence_frame) or (None, None, None) if capture fails
+            tuple: (webcam_frame, tof_frame, confidence_frame, confidence_aruco_frame) or (None, None, None, None) if capture fails
         """
         if self.webcam is None:
             return None, None, None
@@ -162,39 +162,71 @@ class WebcamToFPoseMapper:
         # Capture webcam frame
         ret, webcam_frame = self.webcam.read()
         if not ret:
-            return None, None, None
+            return None, None, None, None
         
         # Capture ToF frame
         if self.tof_cam is not None and ac is not None:
             try:
                 frame_data = self.tof_cam.requestFrame(200)
                 if frame_data is None:
-                    return webcam_frame, None, None
+                    return webcam_frame, None, None, None
                 
                 if not isinstance(frame_data, ac.DepthData):
                     self.tof_cam.releaseFrame(frame_data)
-                    return webcam_frame, None, None
+                    return webcam_frame, None, None, None
                 
                 depth_buf = frame_data.depth_data
                 confidence_buf = frame_data.confidence_data
                 
                 if depth_buf is None or depth_buf.size == 0:
                     self.tof_cam.releaseFrame(frame_data)
-                    return webcam_frame, None, None
+                    return webcam_frame, None, None, None
                 
-                # Process ToF depth data
+                # Process ToF depth data for display
                 tof_frame = self.process_tof_frame(depth_buf, confidence_buf)
                 
+                # Process confidence data for ArUco detection
+                confidence_aruco_frame = self.process_confidence_frame_for_aruco(confidence_buf)
+                
                 self.tof_cam.releaseFrame(frame_data)
-                return webcam_frame, tof_frame, confidence_buf
+                return webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame
                 
             except Exception as e:
                 print(f"[WARNING] ToF frame capture failed: {e}")
-                return webcam_frame, None, None
+                return webcam_frame, None, None, None
         else:
             # ToF camera not available, return placeholder
-            return webcam_frame, None, None
+            return webcam_frame, None, None, None
     
+    def process_confidence_frame_for_aruco(self, confidence_buf: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
+        """
+        Process ToF confidence data into a frame suitable for ArUco detection.
+        
+        Args:
+            confidence_buf: Raw confidence data from ToF camera
+            
+        Returns:
+            Processed BGR frame for ArUco detection, or None if no confidence data
+        """
+        if confidence_buf is None:
+            return None
+        
+        # Process confidence buffer
+        confidence_processed = confidence_buf.copy()
+        
+        # Rotate if specified (to match other frame orientations)
+        if self.rotate_tof:
+            confidence_processed = cv2.rotate(confidence_processed, cv2.ROTATE_180)
+        
+        # Normalize confidence values to 0-255 range
+        cv2.normalize(confidence_processed, confidence_processed, 0, 255, cv2.NORM_MINMAX)
+        confidence_processed = confidence_processed.astype(np.uint8)
+        
+        # Convert to BGR for consistency with other processing
+        bgr_frame = cv2.cvtColor(confidence_processed, cv2.COLOR_GRAY2BGR)
+        
+        return bgr_frame
+
     def process_tof_frame(self, depth_buf: np.ndarray, confidence_buf: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Process ToF depth data into displayable frame.
@@ -293,9 +325,11 @@ class WebcamToFPoseMapper:
         print("   2. Press SPACE to capture calibration frames")
         print("   3. Press 'q' to quit without calibrating")
         print("   4. Multiple captures will improve calibration accuracy")
+        print("   NOTE: Using ToF confidence map for ArUco detection")
         
         cv2.namedWindow("Webcam (Detection)", cv2.WINDOW_AUTOSIZE)
         cv2.namedWindow("ToF Camera (Target)", cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow("ToF Confidence (ArUco Detection)", cv2.WINDOW_AUTOSIZE)
         cv2.createTrackbar("Confidence Thr", "ToF Camera (Target)", 
                           self.confidence_threshold, 255, 
                           lambda val: setattr(self, 'confidence_threshold', val))
@@ -303,7 +337,7 @@ class WebcamToFPoseMapper:
         captured_pairs = []
         
         while True:
-            webcam_frame, tof_frame, confidence_buf = self.capture_frames()
+            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 print("[ERROR] Failed to capture webcam frame")
                 break
@@ -312,13 +346,27 @@ class WebcamToFPoseMapper:
                 print("[WARNING] ToF frame not available, using placeholder")
                 tof_frame = np.zeros((480, 640, 3), dtype=np.uint8)
             
+            # Use confidence frame for ArUco detection if available, otherwise fall back to depth frame
+            tof_aruco_frame = confidence_aruco_frame if confidence_aruco_frame is not None else tof_frame
+            
             # Detect ArUco markers in both frames
             webcam_corners, webcam_ids = self.calibration_setup.detect_aruco_marker(webcam_frame)
-            tof_corners, tof_ids = self.calibration_setup.detect_aruco_marker(tof_frame)
+            tof_corners, tof_ids = self.calibration_setup.detect_aruco_marker(tof_aruco_frame)
             
             # Draw markers on frames
             webcam_display = self.draw_aruco_markers(webcam_frame.copy(), webcam_corners, webcam_ids)
             tof_display = self.draw_aruco_markers(tof_frame.copy(), tof_corners, tof_ids)
+            
+            # Create confidence display with markers for ArUco detection visualization
+            if confidence_aruco_frame is not None:
+                confidence_display = self.draw_aruco_markers(confidence_aruco_frame.copy(), tof_corners, tof_ids)
+                # Add info text to confidence display
+                cv2.putText(confidence_display, "Confidence Map (ArUco Detection)", (10, 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            else:
+                confidence_display = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(confidence_display, "No Confidence Data", (10, 240),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             
             # Add status text
             marker_detected_both = False
@@ -336,22 +384,27 @@ class WebcamToFPoseMapper:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
             cv2.putText(tof_display, status_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+            cv2.putText(confidence_display, status_text, (10, 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
             
             # Add capture count
             cv2.putText(webcam_display, f"Captured: {len(captured_pairs)}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(tof_display, f"Captured: {len(captured_pairs)}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(confidence_display, f"Captured: {len(captured_pairs)}", (10, 70),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             # Display frames
             cv2.imshow("Webcam (Detection)", webcam_display)
             cv2.imshow("ToF Camera (Target)", tof_display)
+            cv2.imshow("ToF Confidence (ArUco Detection)", confidence_display)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord(' ') and marker_detected_both:
-                # Capture calibration pair
-                captured_pairs.append((webcam_frame.copy(), tof_frame.copy()))
-                print(f"[SUCCESS] Captured calibration pair {len(captured_pairs)}")
+                # Capture calibration pair - store webcam frame and confidence frame for ArUco detection
+                captured_pairs.append((webcam_frame.copy(), tof_aruco_frame.copy()))
+                print(f"[SUCCESS] Captured calibration pair {len(captured_pairs)} (using confidence map for ToF ArUco detection)")
                 
                 if len(captured_pairs) >= 5:
                     print("[INFO] Sufficient calibration pairs captured. You can continue capturing or press 'c' to compute calibration.")
@@ -378,7 +431,7 @@ class WebcamToFPoseMapper:
         Compute calibration from captured frame pairs.
         
         Args:
-            captured_pairs: List of (webcam_frame, tof_frame) tuples
+            captured_pairs: List of (webcam_frame, tof_confidence_frame) tuples
             
         Returns:
             bool: True if calibration computed successfully
@@ -435,7 +488,8 @@ class WebcamToFPoseMapper:
                 'webcam_points': webcam_points.tolist(),
                 'tof_points': tof_points.tolist(),
                 'num_points': len(webcam_points),
-                'calibration_type': 'webcam_to_tof',
+                'calibration_type': 'webcam_to_tof_confidence',
+                'tof_detection_method': 'confidence_map',
                 'timestamp': time.time()
             }
             
@@ -553,7 +607,7 @@ class WebcamToFPoseMapper:
         fps_time = cv2.getTickCount()
         
         while True:
-            webcam_frame, tof_frame, confidence_buf = self.capture_frames()
+            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 print("[ERROR] Failed to capture webcam frame")
                 break
@@ -641,16 +695,19 @@ class WebcamToFPoseMapper:
         cv2.namedWindow("ToF Camera (Validation)", cv2.WINDOW_AUTOSIZE)
         
         while True:
-            webcam_frame, tof_frame, confidence_buf = self.capture_frames()
+            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 break
             
             if tof_frame is None:
                 tof_frame = np.zeros((480, 640, 3), dtype=np.uint8)
             
-            # Detect ArUco markers
+            # Use confidence frame for ArUco detection if available, otherwise fall back to depth frame
+            tof_aruco_frame = confidence_aruco_frame if confidence_aruco_frame is not None else tof_frame
+            
+            # Detect ArUco markers (using confidence frame for ToF detection)
             webcam_corners, webcam_ids = self.calibration_setup.detect_aruco_marker(webcam_frame)
-            tof_corners, tof_ids = self.calibration_setup.detect_aruco_marker(tof_frame)
+            tof_corners, tof_ids = self.calibration_setup.detect_aruco_marker(tof_aruco_frame)
             
             # Draw markers
             webcam_display = self.draw_aruco_markers(webcam_frame.copy(), webcam_corners, webcam_ids)
