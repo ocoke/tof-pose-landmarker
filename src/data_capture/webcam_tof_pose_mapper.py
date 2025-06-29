@@ -744,74 +744,75 @@ class WebcamToFPoseMapper:
 
                             if RECORDING_LAST_CAPTURE == 0 or (timestamp - RECORDING_LAST_CAPTURE) >= 2:
                                 RECORDING_LAST_CAPTURE = timestamp
+                                tof_frame_path = f"data/tof/{timestamp}.png"
+                                os.makedirs(os.path.dirname(tof_frame_path), exist_ok=True)
+                                original_tof_frame = tof_frame.copy()
+                                cv2.imwrite(tof_frame_path, original_tof_frame)
+
+                                # Save transformed points to data/pose/[timestamp].json
+                                pose_data = {
+                                    'timestamp': timestamp,
+                                    'transformed_points': transformed_points.tolist(),
+                                    'original_tof_frame': tof_frame_path
+                                }
+                                pose_data_path = f"data/pose/{timestamp}.json"
+                                os.makedirs(os.path.dirname(pose_data_path), exist_ok=True)
+                                with open(pose_data_path, 'w') as f:
+                                    json.dump(pose_data, f, indent=2)
+                                print(f"[SUCCESS] Recorded pose data to {pose_data_path}")
+
+                                # Save depth data to data/depth/[timestamp].json
+                                # depth_data_path = f"data/depth/{timestamp}.json"
+                                # os.makedirs(os.path.dirname(depth_data_path), exist_ok=True)
+                                # depth_data = depth_buf.tolist() if depth_buf is not None else []
+                                # with open(depth_data_path, 'w') as f:
+                                #     json.dump(depth_data, f, indent=2)
+                                # print(f"[SUCCESS] Recorded depth data to {depth_data_path}")
+
+                                depth_data_path = f"data/depth/{timestamp}.npy"
+                                os.makedirs(os.path.dirname(depth_data_path), exist_ok=True)
+                                if depth_buf is not None:
+                                    np.save(depth_data_path, depth_buf)
+                                print(f"[SUCCESS] Recorded depth data to {depth_data_path}")
+
+
+                                # Save confidence data to data/confidence/[timestamp].json
+                                # confidence_data_path = f"data/confidence/{timestamp}.json"
+                                # os.makedirs(os.path.dirname(confidence_data_path), exist_ok=True)
+                                # confidence_data = confidence_buf.tolist() if confidence_buf is not None else []
+                                # with open(confidence_data_path, 'w') as f:
+                                #     json.dump(confidence_data, f, indent=2)
+                                # print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
+                                confidence_data_path = f"data/confidence/{timestamp}.npy"
+                                os.makedirs(os.path.dirname(confidence_data_path), exist_ok=True)
+                                if confidence_buf is not None:
+                                    np.save(confidence_data_path, confidence_buf)
+                                print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
+
+
+                            # Save original webcam frame to data/webcam/[timestamp].jpg
+                                webcam_frame_path = f"data/webcam/{timestamp}.jpg"
+                                os.makedirs(os.path.dirname(webcam_frame_path), exist_ok=True)
+                                original_webcam_frame = webcam_frame.copy()
+                                cv2.imwrite(webcam_frame_path, original_webcam_frame)
+                                print(f"[SUCCESS] Recorded webcam frame to {webcam_frame_path}")
+
+                                # Save original pose data to data/original_pose/[timestamp].json 
+                                original_pose_data_path = f"data/original_pose/{timestamp}.json"
+                                os.makedirs(os.path.dirname(original_pose_data_path), exist_ok=True)
+                                original_pose_data = {
+                                    'timestamp': timestamp,
+                                    'landmarks': landmarks,
+                                    'original_webcam_frame': webcam_frame_path
+                                }
+                                with open(original_pose_data_path, 'w') as f:
+                                    json.dump(original_pose_data, f, indent=2)
+                                print(f"[SUCCESS] Recorded original pose data to {original_pose_data_path}")
                             else:
                                 print("[INFO] Skipping recording to avoid duplicates")
                                 continue
 
-                            tof_frame_path = f"data/tof/{timestamp}.png"
-                            os.makedirs(os.path.dirname(tof_frame_path), exist_ok=True)
-                            original_tof_frame = tof_frame.copy()
-                            cv2.imwrite(tof_frame_path, original_tof_frame)
-
-                            # Save transformed points to data/pose/[timestamp].json
-                            pose_data = {
-                                'timestamp': timestamp,
-                                'transformed_points': transformed_points.tolist(),
-                                'original_tof_frame': tof_frame_path
-                            }
-                            pose_data_path = f"data/pose/{timestamp}.json"
-                            os.makedirs(os.path.dirname(pose_data_path), exist_ok=True)
-                            with open(pose_data_path, 'w') as f:
-                                json.dump(pose_data, f, indent=2)
-                            print(f"[SUCCESS] Recorded pose data to {pose_data_path}")
-
-                            # Save depth data to data/depth/[timestamp].json
-                            # depth_data_path = f"data/depth/{timestamp}.json"
-                            # os.makedirs(os.path.dirname(depth_data_path), exist_ok=True)
-                            # depth_data = depth_buf.tolist() if depth_buf is not None else []
-                            # with open(depth_data_path, 'w') as f:
-                            #     json.dump(depth_data, f, indent=2)
-                            # print(f"[SUCCESS] Recorded depth data to {depth_data_path}")
-
-                            depth_data_path = f"data/depth/{timestamp}.npy"
-                            os.makedirs(os.path.dirname(depth_data_path), exist_ok=True)
-                            if depth_buf is not None:
-                                np.save(depth_data_path, depth_buf)
-                            print(f"[SUCCESS] Recorded depth data to {depth_data_path}")
-
-
-                            # Save confidence data to data/confidence/[timestamp].json
-                            # confidence_data_path = f"data/confidence/{timestamp}.json"
-                            # os.makedirs(os.path.dirname(confidence_data_path), exist_ok=True)
-                            # confidence_data = confidence_buf.tolist() if confidence_buf is not None else []
-                            # with open(confidence_data_path, 'w') as f:
-                            #     json.dump(confidence_data, f, indent=2)
-                            # print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
-                            confidence_data_path = f"data/confidence/{timestamp}.npy"
-                            os.makedirs(os.path.dirname(confidence_data_path), exist_ok=True)
-                            if confidence_buf is not None:
-                                np.save(confidence_data_path, confidence_buf)
-                            print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
-
-
-                           # Save original webcam frame to data/webcam/[timestamp].jpg
-                            webcam_frame_path = f"data/webcam/{timestamp}.jpg"
-                            os.makedirs(os.path.dirname(webcam_frame_path), exist_ok=True)
-                            original_webcam_frame = webcam_frame.copy()
-                            cv2.imwrite(webcam_frame_path, original_webcam_frame)
-                            print(f"[SUCCESS] Recorded webcam frame to {webcam_frame_path}")
-
-                            # Save original pose data to data/original_pose/[timestamp].json 
-                            original_pose_data_path = f"data/original_pose/{timestamp}.json"
-                            os.makedirs(os.path.dirname(original_pose_data_path), exist_ok=True)
-                            original_pose_data = {
-                                'timestamp': timestamp,
-                                'landmarks': landmarks,
-                                'original_webcam_frame': webcam_frame_path
-                            }
-                            with open(original_pose_data_path, 'w') as f:
-                                json.dump(original_pose_data, f, indent=2)
-                            print(f"[SUCCESS] Recorded original pose data to {original_pose_data_path}")
+                            
 
 
                            
