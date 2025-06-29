@@ -149,12 +149,12 @@ class WebcamToFPoseMapper:
             print(f"[ERROR] Failed to initialize MediaPipe: {e}")
             return False
     
-    def capture_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    def capture_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Capture frames from webcam and ToF camera.
         
         Returns:
-            tuple: (webcam_frame, tof_frame, confidence_frame, confidence_aruco_frame) or (None, None, None, None) if capture fails
+            tuple: (webcam_frame, tof_frame, depth_buf, confidence_frame, confidence_aruco_frame) or (None, None, None, None) if capture fails
         """
         if self.webcam is None:
             return None, None, None
@@ -189,14 +189,14 @@ class WebcamToFPoseMapper:
                 confidence_aruco_frame = self.process_confidence_frame_for_aruco(confidence_buf)
                 
                 self.tof_cam.releaseFrame(frame_data)
-                return webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame
+                return webcam_frame, tof_frame, depth_buf, confidence_buf, confidence_aruco_frame
                 
             except Exception as e:
                 print(f"[WARNING] ToF frame capture failed: {e}")
-                return webcam_frame, None, None, None
+                return webcam_frame, None, None, None, None
         else:
             # ToF camera not available, return placeholder
-            return webcam_frame, None, None, None
+            return webcam_frame, None, None, None, None
     
     def process_confidence_frame_for_aruco(self, confidence_buf: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         """
@@ -674,6 +674,169 @@ class WebcamToFPoseMapper:
                 break
         
         cv2.destroyAllWindows()
+
+
+
+    def capture_train_data(self) -> None:
+        """
+        Capture training data for machine learning model.
+        """
+        print("=" * 50)
+        print("Instructions:")
+        print("   - Stand in front of webcam for pose detection")
+        print("   - Watch transformed pose appear on ToF camera")
+        print("   - Press 'r' to record pose data")
+        print("   - Press 's' to stop recording")
+        print("   - Press 'q' to quit")
+        
+        cv2.namedWindow("Webcam (Pose Detection)", cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow("ToF Camera (Transformed Pose)", cv2.WINDOW_AUTOSIZE)
+        cv2.createTrackbar("Confidence Thr", "ToF Camera (Transformed Pose)", 
+                          self.confidence_threshold, 255, 
+                          lambda val: setattr(self, 'confidence_threshold', val))
+        
+        fps_time = cv2.getTickCount()
+
+        RECORDING = False
+        
+        while True:
+            webcam_frame, tof_frame, depth_buf, confidence_buf, confidence_aruco_frame = self.capture_frames()
+            if webcam_frame is None:
+                print("[ERROR] Failed to capture webcam frame")
+                break
+            
+            if tof_frame is None:
+                # Create placeholder if ToF frame not available
+                tof_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            
+            # Extract pose landmarks from webcam
+            landmarks, pose_results = self.extract_pose_landmarks(webcam_frame)
+            
+            # Draw original skeleton on webcam frame
+            webcam_display = webcam_frame.copy()
+            if pose_results:
+                webcam_display = self.draw_pose_skeleton(webcam_display, pose_results)
+            
+            # Transform landmarks to ToF camera coordinates
+            tof_display = tof_frame.copy()
+            if landmarks and self.calibration_manager and self.calibration_manager.is_loaded:
+                try:
+                    # Convert landmarks to numpy array
+                    landmarks_array = np.array(landmarks, dtype=np.float32)
+                    
+                    # Transform using homography
+                    if self.calibration_manager.homography is not None:
+                        ones = np.ones((landmarks_array.shape[0], 1), dtype=np.float32)
+                        landmarks_homogeneous = np.hstack([landmarks_array, ones])
+                        
+                        transformed_homogeneous = self.calibration_manager.homography @ landmarks_homogeneous.T
+                        transformed_points = (transformed_homogeneous[:2] / transformed_homogeneous[2]).T
+                        
+                        # Draw transformed points on ToF frame
+                        tof_display = self.draw_transformed_points(tof_display, transformed_points)
+
+                        # If recording, save the transformed points
+                        if RECORDING:
+                            print('[INFO] Recording pose data...')
+                            # Save original time-of-flight frame to data/tof/[timestamp].jpg
+                            timestamp = int(time.time())
+                            tof_frame_path = f"data/tof/{timestamp}.jpg"
+                            os.makedirs(os.path.dirname(tof_frame_path), exist_ok=True)
+                            original_tof_frame = tof_frame.copy()
+                            cv2.imwrite(tof_frame_path, original_tof_frame)
+
+                            # Save transformed points to data/pose/[timestamp].json
+                            pose_data = {
+                                'timestamp': timestamp,
+                                'transformed_points': transformed_points.tolist(),
+                                'original_tof_frame': tof_frame_path
+                            }
+                            pose_data_path = f"data/pose/{timestamp}.json"
+                            os.makedirs(os.path.dirname(pose_data_path), exist_ok=True)
+                            with open(pose_data_path, 'w') as f:
+                                json.dump(pose_data, f, indent=2)
+                            print(f"[SUCCESS] Recorded pose data to {pose_data_path}")
+
+                            # Save depth data to data/depth/[timestamp].json
+                            depth_data_path = f"data/depth/{timestamp}.json"
+                            os.makedirs(os.path.dirname(depth_data_path), exist_ok=True)
+                            depth_data = depth_buf.tolist() if depth_buf is not None else []
+                            with open(depth_data_path, 'w') as f:
+                                json.dump(depth_data, f, indent=2)
+                            print(f"[SUCCESS] Recorded depth data to {depth_data_path}")
+
+                            # Save confidence data to data/confidence/[timestamp].json
+                            confidence_data_path = f"data/confidence/{timestamp}.json"
+                            os.makedirs(os.path.dirname(confidence_data_path), exist_ok=True)
+                            confidence_data = confidence_buf.tolist() if confidence_buf is not None else []
+                            with open(confidence_data_path, 'w') as f:
+                                json.dump(confidence_data, f, indent=2)
+                            print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
+
+                           # Save original webcam frame to data/webcam/[timestamp].jpg
+                            webcam_frame_path = f"data/webcam/{timestamp}.jpg"
+                            os.makedirs(os.path.dirname(webcam_frame_path), exist_ok=True)
+                            original_webcam_frame = webcam_frame.copy()
+                            cv2.imwrite(webcam_frame_path, original_webcam_frame)
+                            print(f"[SUCCESS] Recorded webcam frame to {webcam_frame_path}")
+
+                            # Save original pose data to data/original_pose/[timestamp].json 
+                            original_pose_data_path = f"data/original_pose/{timestamp}.json"
+                            os.makedirs(os.path.dirname(original_pose_data_path), exist_ok=True)
+                            original_pose_data = {
+                                'timestamp': timestamp,
+                                'landmarks': landmarks,
+                                'original_webcam_frame': webcam_frame_path
+                            }
+                            with open(original_pose_data_path, 'w') as f:
+                                json.dump(original_pose_data, f, indent=2)
+                            print(f"[SUCCESS] Recorded original pose data to {original_pose_data_path}")
+
+
+                           
+                        
+                        # Add info text
+                        cv2.putText(tof_display, f"Mapped points: {len(transformed_points)}", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                except Exception as e:
+                    print(f"[WARNING] Transformation error: {e}")
+            
+            # Calculate and display FPS
+            current_time = cv2.getTickCount()
+            fps = cv2.getTickFrequency() / (current_time - fps_time)
+            fps_time = current_time
+            
+            cv2.putText(webcam_display, f"FPS: {int(fps)}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(tof_display, f"FPS: {int(fps)}", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            # Add status information
+            pose_status = "Pose detected" if landmarks else "No pose detected"
+            cv2.putText(webcam_display, pose_status, (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            # Display frames
+            cv2.imshow("Webcam (Pose Detection)", webcam_display)
+            cv2.imshow("ToF Camera (Transformed Pose)", tof_display)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("[END] Pose mapping stopped by user")
+                break
+            if key == ord('r'):
+                if not RECORDING:
+                    print("[INFO] Starting recording pose data...")
+                    RECORDING = True
+
+            if key == ord('s'):
+                if RECORDING:
+                    print("[INFO] Stopping recording pose data...")
+                    RECORDING = False
+
+        
+        cv2.destroyAllWindows()
     
     def validate_calibration_realtime(self) -> bool:
         """
@@ -832,6 +995,7 @@ class WebcamToFPoseMapper:
         
         cv2.destroyAllWindows()
         print("[LOG] All windows closed")
+
 
 
 def main():
