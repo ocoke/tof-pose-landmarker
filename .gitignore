@@ -33,3 +33,5 @@ test_src/
 .idea/**/build/
 
 .idea/runConfigurations/
+
+data/
