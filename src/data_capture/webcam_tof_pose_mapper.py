@@ -742,7 +742,7 @@ class WebcamToFPoseMapper:
                             # Save original time-of-flight frame to data/tof/[timestamp].jpg
                             timestamp = int(time.time())
 
-                            if RECORDING_LAST_CAPTURE == 0 or (timestamp - RECORDING_LAST_CAPTURE) >= 2:
+                            if RECORDING_LAST_CAPTURE == 0 or (timestamp - RECORDING_LAST_CAPTURE) >= 1:
                                 RECORDING_LAST_CAPTURE = timestamp
                                 tof_frame_path = f"data/tof/{timestamp}.png"
                                 os.makedirs(os.path.dirname(tof_frame_path), exist_ok=True)
@@ -810,8 +810,6 @@ class WebcamToFPoseMapper:
                                 print(f"[SUCCESS] Recorded original pose data to {original_pose_data_path}")
                             else:
                                 print("[INFO] Skipping recording to avoid duplicates")
-                                continue
-
                             
 
 
