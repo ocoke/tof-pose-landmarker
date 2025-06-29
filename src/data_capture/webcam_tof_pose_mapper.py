@@ -748,7 +748,7 @@ class WebcamToFPoseMapper:
                                 print("[INFO] Skipping recording to avoid duplicates")
                                 continue
 
-                            tof_frame_path = f"data/tof/{timestamp}.jpg"
+                            tof_frame_path = f"data/tof/{timestamp}.png"
                             os.makedirs(os.path.dirname(tof_frame_path), exist_ok=True)
                             original_tof_frame = tof_frame.copy()
                             cv2.imwrite(tof_frame_path, original_tof_frame)
@@ -792,7 +792,7 @@ class WebcamToFPoseMapper:
                             if confidence_buf is not None:
                                 np.save(confidence_data_path, confidence_buf)
                             print(f"[SUCCESS] Recorded confidence data to {confidence_data_path}")
-                            
+
 
                            # Save original webcam frame to data/webcam/[timestamp].jpg
                             webcam_frame_path = f"data/webcam/{timestamp}.jpg"
