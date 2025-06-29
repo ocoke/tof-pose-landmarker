@@ -337,7 +337,7 @@ class WebcamToFPoseMapper:
         captured_pairs = []
         
         while True:
-            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
+            webcam_frame, tof_frame, depth_buf, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 print("[ERROR] Failed to capture webcam frame")
                 break
@@ -607,7 +607,7 @@ class WebcamToFPoseMapper:
         fps_time = cv2.getTickCount()
         
         while True:
-            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
+            webcam_frame, tof_frame, depth_buf, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 print("[ERROR] Failed to capture webcam frame")
                 break
@@ -858,7 +858,7 @@ class WebcamToFPoseMapper:
         cv2.namedWindow("ToF Camera (Validation)", cv2.WINDOW_AUTOSIZE)
         
         while True:
-            webcam_frame, tof_frame, confidence_buf, confidence_aruco_frame = self.capture_frames()
+            webcam_frame, tof_frame, depth_buf, confidence_buf, confidence_aruco_frame = self.capture_frames()
             if webcam_frame is None:
                 break
             
