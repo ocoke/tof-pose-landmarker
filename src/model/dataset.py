@@ -40,7 +40,7 @@ def generate_heatmaps(keypoints, output_res, sigma=2):
 
 
 class PoseDataset(Dataset):
-    def __init__(self, data_dir, num_keypoints=33, output_res=(240, 240)):
+    def __init__(self, data_dir, num_keypoints=33, output_res=(240, 240), augment=False):
         self.data_dir = data_dir
         self.depth_dir = os.path.join(data_dir, 'depth')
         self.confidence_dir = os.path.join(data_dir, 'confidence')
@@ -49,6 +49,7 @@ class PoseDataset(Dataset):
         self.file_list = [f.split('.')[0] for f in os.listdir(self.depth_dir)]
         self.num_keypoints = num_keypoints
         self.output_res = output_res
+        self.augment = augment
 
     def __len__(self):
         return len(self.file_list)
@@ -100,7 +101,7 @@ class PoseDataset(Dataset):
             # Rotate image
             input_tensor = TF.rotate(input_tensor, angle)
             # Rotate keypoints around the image center
-            
+
             # Get image center, explicitly creating a float32 tensor
             center = torch.tensor([input_tensor.shape[2] / 2, input_tensor.shape[1] / 2], dtype=torch.float32)
 
