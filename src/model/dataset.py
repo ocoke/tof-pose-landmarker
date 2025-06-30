@@ -100,11 +100,19 @@ class PoseDataset(Dataset):
             # Rotate image
             input_tensor = TF.rotate(input_tensor, angle)
             # Rotate keypoints around the image center
-            center = (input_tensor.shape[2] / 2, input_tensor.shape[1] / 2)
-            rot_mat = torch.tensor([[np.cos(np.radians(-angle)), -np.sin(np.radians(-angle))],
-                                    [np.sin(np.radians(-angle)), np.cos(np.radians(-angle))]])
-            keypoints_tensor = torch.from_numpy(keypoints_2d).float() - torch.tensor(center)
-            keypoints_tensor = torch.matmul(keypoints_tensor, rot_mat) + torch.tensor(center)
+            
+            # Get image center, explicitly creating a float32 tensor
+            center = torch.tensor([input_tensor.shape[2] / 2, input_tensor.shape[1] / 2], dtype=torch.float32)
+
+            # Create rotation matrix, explicitly creating a float32 tensor
+            rot_mat = torch.tensor([
+                [np.cos(np.radians(-angle)), -np.sin(np.radians(-angle))],
+                [np.sin(np.radians(-angle)), np.cos(np.radians(-angle))]
+            ], dtype=torch.float32)
+            
+            # Now all tensors in the operation below are torch.float32
+            keypoints_tensor = torch.from_numpy(keypoints_2d).float() - center
+            keypoints_tensor = torch.matmul(keypoints_tensor, rot_mat) + center
             keypoints_2d = keypoints_tensor.numpy()
 
 

@@ -36,7 +36,7 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 # the learning rate scheduler
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, 'min', patience=SCHEDULER_PATIENCE, factor=SCHEDULER_FACTOR, verbose=True
+    optimizer, 'min', patience=SCHEDULER_PATIENCE, factor=SCHEDULER_FACTOR,
 )
 
 
@@ -111,6 +111,15 @@ for epoch in range(EPOCHS):
     
     avg_val_loss = total_val_loss / len(val_loader)
     print(f"Epoch {epoch+1}/{EPOCHS}, Validation Loss: {avg_val_loss:.6f}")
+
+    current_lr = optimizer.param_groups[0]['lr']
+
+    print(
+        f"Epoch {epoch+1}/{EPOCHS} | "
+        f"Train Loss: {avg_loss:.6f} | "
+        f"Val Loss: {avg_val_loss:.6f} | "
+        f"LR: {current_lr:.1e}"
+    )
 
     scheduler.step(avg_val_loss)
 
