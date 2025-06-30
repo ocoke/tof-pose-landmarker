@@ -48,6 +48,7 @@ train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size], 
 train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(dataset=val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
+best_val_loss = float('inf')  # Initialize best validation loss
 # --- Training Loop ---
 for epoch in range(EPOCHS):
     model.train()
@@ -86,6 +87,12 @@ for epoch in range(EPOCHS):
     avg_val_loss = total_val_loss / len(val_loader)
     print(f"Epoch {epoch+1}/{EPOCHS}, Validation Loss: {avg_val_loss:.6f}")
 
+    if avg_loss < best_val_loss:
+        best_val_loss = avg_loss
+        print(f"New best validation loss: {best_val_loss:.6f}, saving model...")
+        # Save the model state
+        torch.save(model.state_dict(), "models/pose_unet_best_model.pth")
+
 # --- Save the trained model ---
-torch.save(model.state_dict(), "pose_unet_model.pth")
+torch.save(model.state_dict(), "models/pose_unet_model.pth")
 print("Model saved!")
