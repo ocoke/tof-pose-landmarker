@@ -2,8 +2,13 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-import os, json
+import os, json, random
 from torchvision import transforms
+import torchvision.transforms.functional as TF
+# This is the standard MediaPipe keypoint mapping for flipping
+# We need this to swap left and right body parts
+FLIP_INDICES = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17, 20, 19, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 32, 31]
+
 
 # This function will be called by our Dataset to create the target heatmaps
 def generate_heatmaps(keypoints, output_res, sigma=2):
@@ -77,6 +82,33 @@ class PoseDataset(Dataset):
         
         # Stack depth and confidence
         input_tensor = torch.from_numpy(np.stack([depth_map, confidence_map], axis=0)).float()
+
+
+        if self.augment:
+            # 1. Random Horizontal Flip (50% chance)
+            if random.random() > 0.5:
+                # Flip the image tensor
+                input_tensor = TF.hflip(input_tensor)
+                # Flip the keypoint x-coordinates
+                img_width = input_tensor.shape[2]
+                keypoints_2d[:, 0] = img_width - 1 - keypoints_2d[:, 0]
+                # Swap the left/right keypoint indices
+                keypoints_2d = keypoints_2d[FLIP_INDICES]
+
+            # 2. Random Rotation
+            angle = (random.random() - 0.5) * 2 * 15 # Random angle between -15 and +15 degrees
+            # Rotate image
+            input_tensor = TF.rotate(input_tensor, angle)
+            # Rotate keypoints around the image center
+            center = (input_tensor.shape[2] / 2, input_tensor.shape[1] / 2)
+            rot_mat = torch.tensor([[np.cos(np.radians(-angle)), -np.sin(np.radians(-angle))],
+                                    [np.sin(np.radians(-angle)), np.cos(np.radians(-angle))]])
+            keypoints_tensor = torch.from_numpy(keypoints_2d).float() - torch.tensor(center)
+            keypoints_tensor = torch.matmul(keypoints_tensor, rot_mat) + torch.tensor(center)
+            keypoints_2d = keypoints_tensor.numpy()
+
+
+
 
         # Pad to square
         _, h, w = input_tensor.shape
