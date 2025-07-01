@@ -134,6 +134,6 @@ class PoseDataset(Dataset):
         keypoints_2d[:, 1] += pad_top
 
         # Generate target heatmaps
-        target_heatmaps = generate_heatmaps(keypoints_2d, self.output_res, sigma=2)
+        target_heatmaps = generate_heatmaps(keypoints_2d, self.output_res, sigma=5)
 
         return input_tensor, target_heatmaps

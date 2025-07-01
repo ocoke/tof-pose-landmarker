@@ -31,7 +31,8 @@ if torch.accelerator.is_available():
 model = PoseUNet(n_channels=INPUT_CHANNELS, n_keypoints=NUM_KEYPOINTS).to(device)
 
 # Loss and Optimizer
-loss_function = nn.MSELoss()
+pos_weight = torch.tensor([500.0]).to(device)
+loss_function = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 # the learning rate scheduler
@@ -77,68 +78,52 @@ epochs_no_improve = 0
 # --- Training Loop ---
 for epoch in range(EPOCHS):
     model.train()
-    total_loss = 0
-    
-    for batch_idx, (data, targets) in enumerate(train_loader):
-        data = data.to(device)
-        targets = targets.to(device)
-
-        # Forward pass
-        predictions = model(data)
-        
-        # Calculate loss
-        loss = loss_function(predictions, targets)
-        total_loss += loss.item()
-
-        # Backward pass and optimization
+    total_train_loss = 0
+    for data, targets in train_loader:
+        data, targets = data.to(device), targets.to(device)
         optimizer.zero_grad()
+        predictions = model(data)
+        loss = loss_function(predictions, targets)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        total_train_loss += loss.item()
+    avg_train_loss = total_train_loss / len(train_loader)
 
-    avg_loss = total_loss / len(train_loader)
-    print(f"Epoch {epoch+1}/{EPOCHS}, Training Loss: {avg_loss:.6f}")
-
-    # --- Validation (Optional but Recommended) ---
+    # --- Validation Loop ---
     model.eval()
     total_val_loss = 0
     with torch.no_grad():
         for data, targets in val_loader:
-            data = data.to(device)
-            targets = targets.to(device)
+            data, targets = data.to(device), targets.to(device)
             predictions = model(data)
             val_loss = loss_function(predictions, targets)
             total_val_loss += val_loss.item()
-    
     avg_val_loss = total_val_loss / len(val_loader)
-    print(f"Epoch {epoch+1}/{EPOCHS}, Validation Loss: {avg_val_loss:.6f}")
 
     current_lr = optimizer.param_groups[0]['lr']
 
     print(
         f"Epoch {epoch+1}/{EPOCHS} | "
-        f"Train Loss: {avg_loss:.6f} | "
+        f"Train Loss: {avg_train_loss:.6f} | "
         f"Val Loss: {avg_val_loss:.6f} | "
         f"LR: {current_lr:.1e}"
     )
 
+    # --- Scheduler and Early Stopping ---
     scheduler.step(avg_val_loss)
-
-
-    if avg_loss < best_val_loss:
-        best_val_loss = avg_loss
-        print(f"New best validation loss: {best_val_loss:.6f}, saving model...")
-        # Save the model state
-        torch.save(model.state_dict(), "models/pose_unet_best_model.pth")
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
         epochs_no_improve = 0
+        torch.save(model.state_dict(), "models/pose_unet_best_model.pth")
+        print(f"Validation loss improved. Model saved to models/pose_unet_best_model.pth")
     else:
         epochs_no_improve += 1
-        print(f"No improvement in validation loss for {epochs_no_improve} epochs.")
-        
-        # Early stopping
-        if epochs_no_improve >= EARLY_STOP_PATIENCE:
-            print(f"Early stopping triggered after {EARLY_STOP_PATIENCE} epochs without improvement.")
-            break
+        print(f"No improvement for {epochs_no_improve} epochs.")
 
-# --- Save the trained model ---
-torch.save(model.state_dict(), "models/pose_unet_model.pth")
-print("Model saved!")
+    if epochs_no_improve >= EARLY_STOP_PATIENCE:
+        print(f"Early stopping triggered after {epoch+1} epochs.")
+        break
+
+# --- Save Final Model ---
+print(f"Finished training.")

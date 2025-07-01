@@ -34,15 +34,16 @@ class Down(nn.Module):
         return self.maxpool_conv(x)
 
 class Up(nn.Module):
-    """Upscaling then double conv"""
-    def __init__(self, in_channels, out_channels, bilinear=True):
+    """Upscaling then double conv, now with ConvTranspose2d"""
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
-        else:
-            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
+
+        # Use a learnable upsampling layer
+        self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+
+        # The subsequent convolution now takes the concatenated channels
+        # We are using the standard DoubleConv here again for more capacity
+        self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -63,25 +64,31 @@ class OutConv(nn.Module):
         return self.conv(x)
 
 class PoseUNet(nn.Module):
-    def __init__(self, n_channels, n_keypoints, bilinear=True):
+    def __init__(self, n_channels, n_keypoints):
         super(PoseUNet, self).__init__()
         self.n_channels = n_channels
         self.n_keypoints = n_keypoints
-        self.bilinear = bilinear
 
+        # Encoder Path
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
-        factor = 2 if bilinear else 1
-        self.down4 = Down(512, 1024 // factor)
-        self.up1 = Up(1024, 512 // factor, bilinear)
-        self.up2 = Up(512, 256 // factor, bilinear)
-        self.up3 = Up(256, 128 // factor, bilinear)
-        self.up4 = Up(128, 64, bilinear)
+        # At the bottom of the U
+        self.down4 = Down(512, 1024)
+
+        # Decoder Path (Corrected Channel Numbers)
+        # The first Up block (`up1`) must accept the output of `down4` (1024 channels)
+        self.up1 = Up(1024, 512)
+        # `up2` accepts the output of `up1` (512 channels) concatenated with `down3` (512 channels),
+        # so its `DoubleConv` will see 1024 channels. The Up class handles this.
+        self.up2 = Up(512, 256)
+        self.up3 = Up(256, 128)
+        self.up4 = Up(128, 64)
         self.outc = OutConv(64, n_keypoints)
 
     def forward(self, x):
+        # This part remains the same and is logically correct
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -92,6 +99,4 @@ class PoseUNet(nn.Module):
         x = self.up3(x, x2)
         x = self.up4(x, x1)
         logits = self.outc(x)
-        # add a sigmoid activation here if we want the heatmap values to be between 0-1
-        # which is common for heatmap regression.
-        return torch.sigmoid(logits)
+        return logits
