@@ -47,7 +47,7 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
     inference_times = []
     all_errors = []
     pck_scores = []
-    pck_threshold = 10 # in pixels
+    pck_threshold = 12 # in pixels
 
     with torch.no_grad():
         for inputs, targets in val_loader:

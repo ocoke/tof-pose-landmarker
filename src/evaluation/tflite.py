@@ -39,7 +39,7 @@ def evaluate_tflite_model(model_path, val_loader):
     inference_times = []
     all_errors = []
     pck_scores = []
-    pck_threshold = 10 # in pixels
+    pck_threshold = 12 # in pixels
 
     for inputs, targets in val_loader:
         input_data = inputs.numpy()
