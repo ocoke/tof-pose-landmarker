@@ -36,3 +36,4 @@ test_src/
 
 data/
 data.zip
+*.tflite
