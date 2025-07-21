@@ -15,6 +15,7 @@ from model.model import PoseUNet
 from model_slim.model import SlimPoseUNet # Make sure both are available
 from model.dataset import PoseDataset
 from model_slim.dataset import SlimPoseDataset # Correctly import the slim dataset
+from model_slim.medium_model import MediumPoseUNet
 
 def get_coords_from_heatmaps(heatmaps_tensor):
     """ Extracts (x,y) coordinates from a batch of heatmaps. """
@@ -37,6 +38,8 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
         model = PoseUNet(n_channels=2, n_keypoints=33).to(device) # Assuming 33 kpts for heavy
     elif model_arch == 'slim':
         model = SlimPoseUNet(in_ch=2, n_kpts=17).to(device) # Assuming 17 kpts for slim
+    elif model_arch == 'medium':
+        model = MediumPoseUNet(in_ch=2, n_kpts=17).to(device)
     else:
         raise ValueError("Unknown model architecture specified.")
         
@@ -92,7 +95,7 @@ def print_results(results_dict):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate a PyTorch Pose Estimation Model")
     parser.add_argument("--model", type=str, required=True, help="Path to the .pth model file.")
-    parser.add_argument("--arch", type=str, required=True, choices=['heavy', 'slim'], help="Specify model architecture ('heavy' for UNet, 'slim' for SlimPoseUNet).")
+    parser.add_argument("--arch", type=str, required=True, choices=['heavy', 'slim', 'medium'], help="Specify model architecture ('heavy' for UNet, 'slim' for SlimPoseUNet).")
     parser.add_argument("--data", type=str, default="./data", help="Path to the data directory.")
     args = parser.parse_args()
 
@@ -103,7 +106,7 @@ if __name__ == '__main__':
     if args.arch == 'heavy':
         # The heavy model uses 33 keypoints and the original PoseDataset
         full_dataset = PoseDataset(data_dir=args.data, augment=False, num_keypoints=33)
-    elif args.arch == 'slim':
+    elif args.arch == 'slim' or args.arch == 'medium':
         # The slim model uses 17 keypoints and the new SlimPoseDataset
         full_dataset = SlimPoseDataset(data_dir=args.data, augment=False, num_keypoints=17)
     
