@@ -5,3 +5,5 @@ opencv-python==4.11.0.86
 pillow==11.1.0
 matplotlib==3.10.0
 mediapipe==0.10.11
+tensorflow==2.20.0
+ai-edge-torch==0.5.0
