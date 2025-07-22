@@ -14,6 +14,7 @@ from model.model import PoseUNet
 from model_slim.model import SlimPoseUNet
 from model.dataset import PoseDataset
 from model_slim.dataset import SlimPoseDataset
+from model_slim.medium_model import MediumPoseUNet
 
 def get_coords_from_heatmaps(heatmaps):
     """ Extracts (x,y) coordinates from a batch of heatmaps. """
@@ -49,6 +50,8 @@ def main(args):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if args.arch == 'heavy':
             model = PoseUNet(n_channels=2, n_keypoints=args.kpts).to(device)
+        elif args.arch == 'medium':
+            model = MediumPoseUNet(in_ch=2, n_kpts=args.kpts).to(device)
         else: # slim
             model = SlimPoseUNet(in_ch=2, n_kpts=args.kpts).to(device)
         model.load_state_dict(torch.load(args.model, map_location=device))
@@ -107,7 +110,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Visualize final keypoint predictions from a model.")
     parser.add_argument("--model", type=str, required=True, help="Path to the model file (.pth or .tflite).")
     parser.add_argument("--type", type=str, required=True, choices=['pytorch', 'tflite'], help="Type of the model.")
-    parser.add_argument("--arch", type=str, choices=['heavy', 'slim'], help="Specify architecture if model type is pytorch (required for pytorch).")
+    parser.add_argument("--arch", type=str, choices=['heavy', 'slim', 'medium'], help="Specify architecture if model type is pytorch (required for pytorch).")
     parser.add_argument("--kpts", type=int, required=True, choices=[17, 33], help="Number of keypoints the model outputs (17 for slim, 33 for heavy).")
     parser.add_argument("--data", type=str, default="./data", help="Path to the data directory.")
     parser.add_argument("--num-images", type=int, default=5, help="Number of images to visualize.")

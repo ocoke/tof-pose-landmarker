@@ -50,7 +50,9 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
     inference_times = []
     all_errors = []
     pck_scores = []
+    pck_10_scores = []
     pck_threshold = 12 # in pixels
+    pck_10_threshold = 24 # in pixels
 
     with torch.no_grad():
         for inputs, targets in val_loader:
@@ -70,13 +72,15 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
             error = np.linalg.norm(pred_coords[0] - gt_coords[0], axis=1)
             all_errors.extend(error)
             pck_scores.append(np.mean(error < pck_threshold))
+            pck_10_scores.append(np.mean(error < pck_10_threshold))
 
     # --- Print Results ---
     print_results({
         "avg_latency_ms": np.mean(inference_times),
         "fps": 1000 / np.mean(inference_times),
         "mpjpe_pixels": np.mean(all_errors),
-        "pck_accuracy": np.mean(pck_scores) * 100
+        "pck_accuracy": np.mean(pck_scores) * 100,
+        "pck_10%_accuracy": np.mean(pck_10_scores) * 100
     })
 
 def print_results(results_dict):
@@ -90,6 +94,7 @@ def print_results(results_dict):
     print(f"{'Theoretical FPS':<25} | {results_dict['fps']:.2f}")
     print(f"{'Avg. Error (pixels)':<25} | {results_dict['mpjpe_pixels']:.2f}")
     print(f"{'PCK Accuracy (%)':<25} | {results_dict['pck_accuracy']:.2f}")
+    print(f"{'PCK@10% Accuracy (%)':<25} | {results_dict['pck_10%_accuracy']:.2f}")
     print("="*30)
 
 if __name__ == '__main__':
