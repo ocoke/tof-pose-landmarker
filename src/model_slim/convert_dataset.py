@@ -1,8 +1,8 @@
 import os, json
 
 # 1. Directories
-INPUT_DIR  = '/content/data/pose'
-OUTPUT_DIR = '/content/data/pose_coco17'
+INPUT_DIR  = './data/pose'
+OUTPUT_DIR = './data/pose_coco17'
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"Saving COCO-17 JSONs into: {OUTPUT_DIR}")
