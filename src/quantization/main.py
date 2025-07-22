@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 # --- Configuration ---
 PYTORCH_MODEL_PATH = "./models/pose_unet_bce_best_model_medium.pth"
 DATA_DIR = "./data"
-TFLITE_QUANT_MODEL_PATH = "./models/medium_model_quant_int8.tflite"
+TFLITE_QUANT_MODEL_PATH = "./models/medium_model_quant_float16.tflite"
 INPUT_SHAPE = (1, 2, 240, 240)
 NUM_KEYPOINTS = 17
 
@@ -49,16 +49,18 @@ print(f"✅ Representative dataset generator defined.")
 
 # --- Step 3: Define TFLite Converter Flags and Convert ---
 print("\n" + "="*50)
-print(f"Step 3: Converting to Quantized INT8 TFLite...")
+print(f"Step 3: Converting to Quantized FLOAT16 TFLite...")
 
 tfl_converter_flags = {
     'optimizations': [tf.lite.Optimize.DEFAULT],
-    # --- BUG FIX IS HERE ---
-    # Pass the function ITSELF, not the result of calling it with ().
-    'representative_dataset': representative_dataset_gen,
-    'target_spec.supported_ops': [tf.lite.OpsSet.TFLITE_BUILTINS_INT8],
-    'inference_input_type': tf.float32,
-    'inference_output_type': tf.float32,
+
+    'target_spec.supported_types': [tf.float16],  # for float16
+
+    # for int 8
+    # 'representative_dataset': representative_dataset_gen,
+    # 'target_spec.supported_ops': [tf.lite.OpsSet.TFLITE_BUILTINS_INT8],
+    # 'inference_input_type': tf.float32,
+    # 'inference_output_type': tf.float32,
 }
 
 edge_model_quantized = ai_edge_torch.convert(
