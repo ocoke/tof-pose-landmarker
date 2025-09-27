@@ -17,6 +17,8 @@ from model_edge.model import EdgePoseUNet
 from model.dataset import PoseDataset
 from model_slim.dataset import SlimPoseDataset # Correctly import the slim dataset
 from model_slim.medium_model import MediumPoseUNet
+from model_edge_v5.dataset import EdgePoseDataset
+from model_edge_v5.model import EdgePoseUNetV2
 
 def get_coords_from_heatmaps(heatmaps_tensor):
     """ Extracts (x,y) coordinates from a batch of heatmaps. """
@@ -42,7 +44,9 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
     elif model_arch == 'medium':
         model = MediumPoseUNet(in_ch=2, n_kpts=17).to(device)
     elif model_arch == 'edge':
-        model = EdgePoseUNet(in_ch=2, n_kpts=17, width_mult=1.0, p_drop=0.05).to(device)
+        model = EdgePoseUNet(in_ch=2, n_kpts=17, width_mult=1.15, p_drop=0.02).to(device)
+    elif model_arch == 'edge_v5':
+        model = EdgePoseUNetV2(in_ch=2, n_kpts=17, width_mult=1.15).to(device)
     else:
         raise ValueError("Unknown model architecture specified.")
         
@@ -58,7 +62,7 @@ def evaluate_pytorch_model(model_path, model_arch, val_loader, device):
     pck_10_threshold = 24 # in pixels
 
     with torch.no_grad():
-        for inputs, targets in val_loader:
+        for inputs, targets, _ in val_loader:
             inputs = inputs.to(device)
             
             # Run Inference and measure time
@@ -103,7 +107,7 @@ def print_results(results_dict):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate a PyTorch Pose Estimation Model")
     parser.add_argument("--model", type=str, required=True, help="Path to the .pth model file.")
-    parser.add_argument("--arch", type=str, required=True, choices=['heavy', 'slim', 'medium', 'edge'], help="Specify model architecture ('heavy' for UNet, 'slim' for SlimPoseUNet).")
+    parser.add_argument("--arch", type=str, required=True, choices=['heavy', 'slim', 'medium', 'edge', 'edge_v5'], help="Specify model architecture ('heavy' for UNet, 'slim' for SlimPoseUNet).")
     parser.add_argument("--data", type=str, default="./data", help="Path to the data directory.")
     args = parser.parse_args()
 
@@ -117,11 +121,14 @@ if __name__ == '__main__':
     elif args.arch == 'slim' or args.arch == 'medium' or args.arch == 'edge':
         # The slim model uses 17 keypoints and the new SlimPoseDataset
         full_dataset = SlimPoseDataset(data_dir=args.data, augment=False, num_keypoints=17)
-    
+    elif args.arch == 'edge_v5':
+        # The edge_v5 model uses 17 keypoints and the new SlimPoseDataset
+        full_dataset = EdgePoseDataset(data_dir=args.data, augment=False, num_keypoints=17)
+
     # The rest of the data splitting logic is the same
     val_size = int(0.2 * len(full_dataset))
     train_size = len(full_dataset) - val_size
-    _, val_dataset = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
+    _, val_dataset = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(720))
     val_loader = DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
     
     evaluate_pytorch_model(args.model, args.arch, val_loader, device)
