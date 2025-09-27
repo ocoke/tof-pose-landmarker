@@ -27,9 +27,9 @@ except ImportError:
     print("[ERROR] ArducamDepthCamera not found. Install the Arducam ToF SDK.")
     sys.exit(1)
 
-# ---- Import your model ----
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from model_edge_v5.model import EdgePoseUNetV2
+    from src.model_edge_v5.model import EdgePoseUNetV2
 except ImportError:
     print("[ERROR] Could not import EdgePoseUNetV2 from model_edge_v5.model")
     sys.exit(1)
