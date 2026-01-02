@@ -28,11 +28,12 @@ def main():
         from webcam_tof_pose_mapper import WebcamToFPoseMapper
         
         # Create mapper instance
-        # Default: webcam_id=0, camera_range_mm=4000.0, rotate_tof=True
+        # Default: webcam_id=0, camera_range_mm=4000.0, rotate_tof=True, rotate_rgb=False
         mapper = WebcamToFPoseMapper(
             webcam_id=0,           # Try webcam ID 1 if 0 doesn't work
             camera_range_mm=4000.0, # ToF range in millimeters
-            rotate_tof=True        # Rotate ToF image 180 degrees
+            rotate_tof=True,        # Rotate ToF image 180 degrees
+            rotate_rgb=False        # Rotate webcam image 180 degrees before processing
         )
         
         print("Starting pose mapping pipeline...")

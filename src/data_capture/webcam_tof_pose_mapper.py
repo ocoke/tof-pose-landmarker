@@ -33,7 +33,13 @@ class WebcamToFPoseMapper:
     Maps pose detection from webcam to Arducam ToF camera display using calibration.
     """
     
-    def __init__(self, webcam_id: int = 0, camera_range_mm: float = 4000.0, rotate_tof: bool = True):
+    def __init__(
+        self,
+        webcam_id: int = 0,
+        camera_range_mm: float = 4000.0,
+        rotate_tof: bool = True,
+        rotate_rgb: bool = False,
+    ):
         """
         Initialize with webcam ID and ToF camera settings.
         
@@ -41,10 +47,12 @@ class WebcamToFPoseMapper:
             webcam_id: Webcam camera ID for pose detection
             camera_range_mm: ToF camera range in millimeters
             rotate_tof: Whether to rotate ToF image 180 degrees
+            rotate_rgb: Whether to rotate the webcam image 180 degrees before any processing
         """
         self.webcam_id = webcam_id
         self.camera_range_mm = camera_range_mm
         self.rotate_tof = rotate_tof
+        self.rotate_rgb = rotate_rgb
         
         # Camera objects
         self.webcam = None
@@ -77,6 +85,7 @@ class WebcamToFPoseMapper:
         print(f"   Webcam ID: {webcam_id}")
         print(f"   ToF camera range: {camera_range_mm}mm")
         print(f"   Rotate ToF: {rotate_tof}")
+        print(f"   Rotate RGB: {rotate_rgb}")
     
     def initialize_cameras(self) -> bool:
         """
@@ -163,6 +172,9 @@ class WebcamToFPoseMapper:
         ret, webcam_frame = self.webcam.read()
         if not ret:
             return None, None, None, None
+        
+        if self.rotate_rgb:
+            webcam_frame = cv2.rotate(webcam_frame, cv2.ROTATE_180)
         
         # Capture ToF frame
         if self.tof_cam is not None and ac is not None:
@@ -1031,6 +1043,8 @@ def main():
                        help="ToF camera range in millimeters (default: 4000)")
     parser.add_argument("--no-rotate", action="store_true",
                        help="Don't rotate ToF image 180 degrees")
+    parser.add_argument("--rotate-rgb", action="store_true",
+                       help="Rotate webcam image 180 degrees before processing")
     
     args = parser.parse_args()
     
@@ -1038,7 +1052,8 @@ def main():
         mapper = WebcamToFPoseMapper(
             webcam_id=args.webcam_id,
             camera_range_mm=args.tof_range,
-            rotate_tof=not args.no_rotate
+            rotate_tof=not args.no_rotate,
+            rotate_rgb=args.rotate_rgb,
         )
         mapper.run()
     except KeyboardInterrupt:

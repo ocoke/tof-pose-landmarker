@@ -35,6 +35,9 @@ def main():
                        help="ToF camera range in millimeters (default: 4000)")
     parser.add_argument("--no-rotate", action="store_true",
                        help="Don't rotate ToF image 180 degrees")
+    parser.add_argument("--rotate-rgb", action="store_true",
+                       help="Rotate webcam image 180 degrees before processing")
+    
     
     args = parser.parse_args()
     
@@ -42,7 +45,8 @@ def main():
         mapper = WebcamToFPoseMapper(
             webcam_id=args.webcam_id,
             camera_range_mm=args.tof_range,
-            rotate_tof=not args.no_rotate
+            rotate_tof=not args.no_rotate,
+            rotate_rgb=args.rotate_rgb,
         )
         
 
