@@ -1,12 +1,4 @@
 import random
-import os
-import json
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-from torchvision import transforms
-import torchvision.transforms.functional as TF
-
 # FLIP_INDICES = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17, 20, 19, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 32, 31]
 
 # FLIP FOR COCO17
@@ -21,6 +13,8 @@ FLIP_INDICES = [
     14,13,# left_knee ↔ right_knee
     16,15 # left_ankle ↔ right_ankle
 ]
+
+CONF_HI = 350.0  # based on p99.5
 
 # This function will be called by our Dataset to create the target heatmaps
 def generate_heatmaps(keypoints, output_res, sigma=2):
@@ -51,14 +45,14 @@ def generate_heatmaps(keypoints, output_res, sigma=2):
     return torch.from_numpy(heatmaps)
 
 
-class EdgePoseDataset(Dataset):
+class PoseDataset(Dataset):
     def __init__(self, data_dir, num_keypoints=17, output_res=(240, 240), augment=False):
         self.data_dir = data_dir
         self.depth_dir = os.path.join(data_dir, 'depth')
         self.confidence_dir = os.path.join(data_dir, 'confidence')
         self.pose_dir = os.path.join(data_dir, 'pose_coco17')
 
-        self.file_list = sorted([f.split('.')[0] for f in os.listdir(self.depth_dir)])
+        self.file_list = [f.split('.')[0] for f in os.listdir(self.depth_dir)]
         self.num_keypoints = num_keypoints
         self.output_res = output_res
         self.augment = augment
@@ -76,6 +70,7 @@ class EdgePoseDataset(Dataset):
         depth_map = np.load(depth_path)
         confidence_map = np.load(confidence_path)
 
+
         # --- Load and Process Labels ---
         pose_path = os.path.join(self.pose_dir, f"{filename}.json")
 
@@ -92,11 +87,21 @@ class EdgePoseDataset(Dataset):
 
         # --- Pre-process Input (This part is the same) ---
         # Normalize
-        depth_map = depth_map / 4000.0
-        confidence_map = confidence_map / 255.0
+        depth_map = np.nan_to_num(depth_map, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        confidence_map  = np.nan_to_num(confidence_map,  nan=0.0, posinf=CONF_HI, neginf=0.0).astype(np.float32)
+
+        depth_map = np.clip(depth_map, 0.0, 4000.0) / 4000.0
+
+        confidence_map = np.clip(confidence_map, 0.0, CONF_HI)
+        confidence_map = np.log1p(confidence_map) / np.log1p(CONF_HI)
 
         # Stack depth and confidence
-        input_tensor = torch.from_numpy(np.stack([depth_map, confidence_map], axis=0)).float()
+        # input_tensor = torch.from_numpy(np.stack([depth_map, confidence_map], axis=0)).float()
+        depth_gated = depth_map * confidence_map
+        input_tensor = torch.from_numpy(
+            np.stack([depth_map, confidence_map, depth_gated], axis=0)
+        ).float()
+
 
 
         if self.augment:
@@ -121,8 +126,8 @@ class EdgePoseDataset(Dataset):
 
             # Create rotation matrix, explicitly creating a float32 tensor
             rot_mat = torch.tensor([
-                [np.cos(np.radians(-angle)), -np.sin(np.radians(-angle))],
-                [np.sin(np.radians(-angle)), np.cos(np.radians(-angle))]
+                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
+                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
             ], dtype=torch.float32)
 
             # Now all tensors in the operation below are torch.float32
