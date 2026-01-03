@@ -51,7 +51,7 @@ def generate_heatmaps(keypoints, output_res, sigma=2):
     return torch.from_numpy(heatmaps)
 
 
-class PoseDataset(Dataset):
+class EdgePoseDataset(Dataset):
     def __init__(self, data_dir, num_keypoints=17, output_res=(240, 240), augment=False):
         self.data_dir = data_dir
         self.depth_dir = os.path.join(data_dir, 'depth')

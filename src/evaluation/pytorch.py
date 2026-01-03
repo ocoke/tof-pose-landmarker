@@ -72,7 +72,7 @@ def build_model(model_arch: str, device: torch.device) -> torch.nn.Module:
     if model_arch == "edge":
         return EdgePoseUNet(in_ch=2, n_kpts=17, width_mult=1.15, p_drop=0.02).to(device)
     if model_arch == "edge_v5":
-        return EdgePoseUNetV2(in_ch=2, n_kpts=17, width_mult=1.15).to(device)
+        return EdgePoseUNetV2(in_ch=3, n_kpts=17, width_mult=1.15).to(device)
     raise ValueError(f"Unknown model architecture '{model_arch}'.")
 
 
@@ -183,7 +183,11 @@ def evaluate_pytorch_model(
 ) -> Dict[str, float]:
     model = build_model(model_arch, device)
     state = torch.load(model_path, map_location=device)
-    model.load_state_dict(state)
+    load_res = model.load_state_dict(state, strict=False)
+    if load_res.missing_keys:
+        print(f"[WARN] Missing keys when loading state_dict: {load_res.missing_keys}")
+    if load_res.unexpected_keys:
+        print(f"[WARN] Unexpected keys when loading state_dict: {load_res.unexpected_keys}")
     model.eval()
 
     pck5_thresh = 0.05 * max(output_res)
