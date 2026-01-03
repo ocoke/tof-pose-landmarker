@@ -32,14 +32,18 @@ MP_TO_COCO = [
     28   # right_ankle
 ]
 
-# 3. Loop over your Mediapipe JSONs
+err_list = []
 for fname in os.listdir(INPUT_DIR):
     if not fname.endswith('.json'):
         continue
 
     in_path = os.path.join(INPUT_DIR, fname)
-    with open(in_path, 'r') as f:
+    try:
+      with open(in_path, 'r') as f:
         data = json.load(f)
+    except:
+      err_list.append(in_path)
+      continue
 
     # assume your 33-point list is under "transformed_points"
     mp_pts = data.get('transformed_points')
@@ -71,3 +75,5 @@ for fname in os.listdir(INPUT_DIR):
     print(f"  ✔ wrote COCO17 for {fname}")
 
 print("✅ All done!")
+print(err_list)
+
