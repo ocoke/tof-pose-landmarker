@@ -60,7 +60,7 @@ class UpLite(nn.Module):
         x = torch.cat([skip, x], dim=1)
         return self.refine(x)
 
-class EdgePoseUNetV2(nn.Module):
+class EdgePoseUNetV6(nn.Module):
     """
     width_mult scales channels; use 1.0–1.25 on Pi5.
     Blocks: DSConv encoder (stride-2) + bilinear FPN-like decoder.
@@ -94,6 +94,8 @@ class EdgePoseUNetV2(nn.Module):
         )
 
         self.head = nn.Conv2d(c1, n_kpts, kernel_size=1, bias=True)
+
+
 
     def forward(self, x):
         # Encoder

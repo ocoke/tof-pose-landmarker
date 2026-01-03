@@ -22,6 +22,8 @@ from model.dataset import PoseDataset
 from model_edge.model import EdgePoseUNet
 from model_edge_v5.dataset import EdgePoseDataset
 from model_edge_v5.model import EdgePoseUNetV2
+from model_edge_v6.model import EdgePoseUNetV6
+from model_edge_v6.dataset import EdgePoseDatasetV6
 from model_slim.dataset import SlimPoseDataset
 from model_slim.medium_model import MediumPoseUNet
 from model_slim.model import SlimPoseUNet
@@ -72,7 +74,9 @@ def build_model(model_arch: str, device: torch.device) -> torch.nn.Module:
     if model_arch == "edge":
         return EdgePoseUNet(in_ch=2, n_kpts=17, width_mult=1.15, p_drop=0.02).to(device)
     if model_arch == "edge_v5":
-        return EdgePoseUNetV2(in_ch=3, n_kpts=17, width_mult=1.15).to(device)
+        return EdgePoseUNetV2(in_ch=2, n_kpts=17, width_mult=1.15).to(device)
+    if model_arch == "edge_v6":
+        return EdgePoseUNetV6(in_ch=3, n_kpts=17, width_mult=1.15).to(device)
     raise ValueError(f"Unknown model architecture '{model_arch}'.")
 
 
@@ -83,6 +87,8 @@ def build_dataset(model_arch: str, data_dir: str):
         return SlimPoseDataset(data_dir=data_dir, augment=False, num_keypoints=17)
     if model_arch == "edge_v5":
         return EdgePoseDataset(data_dir=data_dir, augment=False, num_keypoints=17)
+    if model_arch == "edge_v6":
+        return EdgePoseDatasetV6(data_dir=data_dir, augment=False, num_keypoints=17)
     raise ValueError(f"Unknown model architecture '{model_arch}'.")
 
 
@@ -296,7 +302,7 @@ if __name__ == "__main__":
         "--arch",
         type=str,
         required=True,
-        choices=["heavy", "slim", "medium", "edge", "edge_v5"],
+        choices=["heavy", "slim", "medium", "edge", "edge_v5", "edge_v6"],
         help="Specify model architecture.",
     )
     parser.add_argument("--data", type=str, default="./data", help="Path to the data directory.")
