@@ -95,6 +95,13 @@ class EdgePoseUNetV2(nn.Module):
 
         self.head = nn.Conv2d(c1, n_kpts, kernel_size=1, bias=True)
 
+        self.conf_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),   # (B, c1, 1, 1)
+            nn.Flatten(),              # (B, c1)
+            nn.Linear(c1, n_kpts)      # (B, 17) logits
+        )
+
+
     def forward(self, x):
         # Encoder
         x1 = self.stem(x)          # (B, c1, 120,120)
