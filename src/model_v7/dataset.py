@@ -88,10 +88,17 @@ class PoseDatasetV7(Dataset):
         return len(self.records)
 
     def _load_sample(self, sample_id: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        depth_map = np.load(os.path.join(self.depth_dir, f"{sample_id}.npy"))
-        confidence_map = np.load(os.path.join(self.confidence_dir, f"{sample_id}.npy"))
-        with open(os.path.join(self.pose_dir, f"{sample_id}.json"), "r", encoding="utf-8") as handle:
-            keypoints = np.array(json.load(handle)["keypoints"], dtype=np.float32)
+        try:
+            depth_map = np.load(os.path.join(self.depth_dir, f"{sample_id}.npy"))
+            confidence_map = np.load(os.path.join(self.confidence_dir, f"{sample_id}.npy"))
+            with open(os.path.join(self.pose_dir, f"{sample_id}.json"), "r", encoding="utf-8") as handle:
+                keypoints = np.array(json.load(handle)["keypoints"], dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Failed to load sample {sample_id}. "
+                "Rebuild the v7 manifest to drop broken files, or remove the corrupted sample. "
+                f"Original error: {exc}"
+            ) from exc
         return depth_map, confidence_map, keypoints
 
     def _normalize_inputs(self, depth_map: np.ndarray, confidence_map: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
