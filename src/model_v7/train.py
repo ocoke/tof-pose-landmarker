@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 from collections import Counter
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -112,7 +112,21 @@ def evaluate_loader(
     }
 
 
-def make_train_loader(dataset: PoseDatasetV7, batch_size: int, num_workers: int) -> DataLoader:
+def make_train_loader(
+    dataset: PoseDatasetV7,
+    batch_size: int,
+    num_workers: int,
+    balanced_by_scene: bool,
+) -> DataLoader:
+    if not balanced_by_scene:
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
     scene_counts = Counter(record.get("scene_id", "scene_0") for record in dataset.records)
     sample_weights = [1.0 / scene_counts[record.get("scene_id", "scene_0")] for record in dataset.records]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
@@ -123,6 +137,18 @@ def make_train_loader(dataset: PoseDatasetV7, batch_size: int, num_workers: int)
         num_workers=num_workers,
         pin_memory=True,
     )
+
+
+def split_records_random(records: List[Dict[str, object]], val_ratio: float, seed: int) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    if not records:
+        return [], []
+    generator = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(len(records), generator=generator).tolist()
+    val_size = max(1, int(len(records) * val_ratio))
+    val_indices = set(perm[:val_size])
+    train_records = [record for idx, record in enumerate(records) if idx not in val_indices]
+    val_records = [record for idx, record in enumerate(records) if idx in val_indices]
+    return train_records, val_records
 
 
 def resolve_stage_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -159,6 +185,13 @@ def main() -> None:
     parser.add_argument("--conf-hi", type=float, default=350.0, help="Confidence clipping constant.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--rebuild-manifest", action="store_true", help="Recompute the manifest instead of reusing it.")
+    parser.add_argument(
+        "--split-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "manifest", "random"],
+        help="How to form train/validation splits. 'auto' falls back to random when no scene map is available.",
+    )
     args = resolve_stage_defaults(parser.parse_args())
 
     torch.manual_seed(args.seed)
@@ -175,23 +208,57 @@ def main() -> None:
         if os.path.exists(stage_a_checkpoint):
             args.resume = stage_a_checkpoint
 
-    train_records = get_records_for_split(records, "train_core")
-    val_seen_records = get_records_for_split(records, "val_seen")
-    val_unseen_records = get_records_for_split(records, "val_unseen")
+    unique_scenes = sorted({record.get("scene_id", "scene_0") for record in records})
+    use_random_split = args.split_mode == "random" or (
+        args.split_mode == "auto" and len(unique_scenes) <= 1 and args.scene_map is None
+    )
 
-    train_dataset = PoseDatasetV7(args.data, records=train_records, augment=True, conf_hi=args.conf_hi)
+    if use_random_split:
+        train_records, val_seen_records = split_records_random(records, val_ratio=0.2, seed=args.seed)
+        val_unseen_records = []
+    else:
+        train_records = get_records_for_split(records, "train_core")
+        val_seen_records = get_records_for_split(records, "val_seen")
+        val_unseen_records = get_records_for_split(records, "val_unseen")
+        if not val_seen_records:
+            print("[WARN] Manifest produced no val_seen split. Falling back to a random 80/20 bootstrap split.")
+            train_records, val_seen_records = split_records_random(records, val_ratio=0.2, seed=args.seed)
+            val_unseen_records = []
+            use_random_split = True
+
+    augment_profile = "basic" if args.stage == "a" else "strong"
+    train_dataset = PoseDatasetV7(
+        args.data,
+        records=train_records,
+        augment=True,
+        augment_profile=augment_profile,
+        conf_hi=args.conf_hi,
+    )
     val_seen_loader = None
     val_unseen_loader = None
 
     if val_seen_records:
-        val_seen_dataset = PoseDatasetV7(args.data, records=val_seen_records, augment=False, min_valid_keypoints=0, conf_hi=args.conf_hi)
+        val_seen_dataset = PoseDatasetV7(
+            args.data,
+            records=val_seen_records,
+            augment=False,
+            min_valid_keypoints=0,
+            conf_hi=args.conf_hi,
+        )
         val_seen_loader = DataLoader(val_seen_dataset, batch_size=args.batch_size, shuffle=False, num_workers=max(1, args.num_workers // 2), pin_memory=True)
 
     if val_unseen_records:
-        val_unseen_dataset = PoseDatasetV7(args.data, records=val_unseen_records, augment=False, min_valid_keypoints=0, conf_hi=args.conf_hi)
+        val_unseen_dataset = PoseDatasetV7(
+            args.data,
+            records=val_unseen_records,
+            augment=False,
+            min_valid_keypoints=0,
+            conf_hi=args.conf_hi,
+        )
         val_unseen_loader = DataLoader(val_unseen_dataset, batch_size=args.batch_size, shuffle=False, num_workers=max(1, args.num_workers // 2), pin_memory=True)
 
-    train_loader = make_train_loader(train_dataset, args.batch_size, args.num_workers)
+    balanced_by_scene = args.stage == "b" and not use_random_split and len(unique_scenes) > 1
+    train_loader = make_train_loader(train_dataset, args.batch_size, args.num_workers, balanced_by_scene=balanced_by_scene)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = EdgePoseUNetV7(in_ch=3, n_kpts=17, width_mult=1.15).to(device)
@@ -211,8 +278,12 @@ def main() -> None:
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
+    split_desc = "random_80_20_bootstrap" if use_random_split else "manifest_scene_split"
     print(f"Training samples: {len(train_dataset)} | val_seen: {len(val_seen_records)} | val_unseen: {len(val_unseen_records)}")
-    print(f"Device: {device} | Stage: {args.stage.upper()} | LR: {args.lr:.1e} | PosWeight: {args.pos_weight:.1f} | LambdaCoord: {args.lambda_coord:.2f}")
+    print(
+        f"Device: {device} | Stage: {args.stage.upper()} | Split: {split_desc} | "
+        f"Aug: {augment_profile} | LR: {args.lr:.1e} | PosWeight: {args.pos_weight:.1f} | LambdaCoord: {args.lambda_coord:.2f}"
+    )
 
     for epoch in range(1, args.epochs + 1):
         model.train()

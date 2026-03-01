@@ -54,6 +54,7 @@ class PoseDatasetV7(Dataset):
         scene_map_path: Optional[str] = None,
         output_res: Tuple[int, int] = (240, 240),
         augment: bool = False,
+        augment_profile: str = "strong",
         min_valid_keypoints: int = 12,
         conf_hi: float = DEFAULT_CONF_HI,
         rebuild_manifest: bool = False,
@@ -64,6 +65,7 @@ class PoseDatasetV7(Dataset):
         self.pose_dir = os.path.join(data_dir, "pose_coco17")
         self.output_res = output_res
         self.augment = augment
+        self.augment_profile = augment_profile
         self.conf_hi = conf_hi
 
         if records is None:
@@ -111,6 +113,9 @@ class PoseDatasetV7(Dataset):
         return depth_map, confidence_map
 
     def _apply_intensity_aug(self, depth_map: np.ndarray, confidence_map: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        if self.augment_profile != "strong":
+            return depth_map.astype(np.float32), confidence_map.astype(np.float32)
+
         depth_map = np.clip(depth_map * random.uniform(0.9, 1.1) + random.uniform(-0.03, 0.03), 0.0, 1.0)
         confidence_map = np.clip(confidence_map * random.uniform(0.8, 1.2) + random.uniform(-0.05, 0.05), 0.0, 1.0)
         depth_map += np.random.normal(0.0, 0.01, size=depth_map.shape).astype(np.float32)
@@ -131,7 +136,7 @@ class PoseDatasetV7(Dataset):
         return np.stack([depth_map, confidence_map, depth_gated], axis=0).astype(np.float32)
 
     def _apply_person_crop(self, channels: np.ndarray, keypoints: np.ndarray, valid_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        if not valid_mask.any() or random.random() >= 0.5:
+        if self.augment_profile != "strong" or not valid_mask.any() or random.random() >= 0.5:
             return channels, keypoints
 
         xs = keypoints[valid_mask, 0]
@@ -173,9 +178,14 @@ class PoseDatasetV7(Dataset):
             valid_mask = valid_mask[FLIP_INDICES]
 
         angle = random.uniform(-15.0, 15.0)
-        scale = random.uniform(0.95, 1.05)
-        tx = random.uniform(-6.0, 6.0)
-        ty = random.uniform(-6.0, 6.0)
+        if self.augment_profile == "strong":
+            scale = random.uniform(0.95, 1.05)
+            tx = random.uniform(-6.0, 6.0)
+            ty = random.uniform(-6.0, 6.0)
+        else:
+            scale = 1.0
+            tx = 0.0
+            ty = 0.0
         height, width = channels.shape[1:]
         matrix = build_affine_matrix(width, height, angle, scale, tx, ty)
 
@@ -191,15 +201,16 @@ class PoseDatasetV7(Dataset):
             )
         keypoints = apply_affine_to_keypoints(keypoints, matrix)
 
-        erase_count = random.randint(1, 2)
-        for _ in range(erase_count):
-            if random.random() >= 0.5:
-                continue
-            rect_w = random.randint(8, min(24, width))
-            rect_h = random.randint(8, min(24, height))
-            x0 = random.randint(0, max(0, width - rect_w))
-            y0 = random.randint(0, max(0, height - rect_h))
-            warped[:, y0 : y0 + rect_h, x0 : x0 + rect_w] = 0.0
+        if self.augment_profile == "strong":
+            erase_count = random.randint(1, 2)
+            for _ in range(erase_count):
+                if random.random() >= 0.5:
+                    continue
+                rect_w = random.randint(8, min(24, width))
+                rect_h = random.randint(8, min(24, height))
+                x0 = random.randint(0, max(0, width - rect_w))
+                y0 = random.randint(0, max(0, height - rect_h))
+                warped[:, y0 : y0 + rect_h, x0 : x0 + rect_w] = 0.0
 
         return warped.astype(np.float32), keypoints.astype(np.float32), valid_mask
 
