@@ -56,6 +56,7 @@ def evaluate_loader(
     pos_weight: float,
     lambda_coord: float,
     normalize_coords: bool,
+    aux_loss_weight: float,
     beta: float = 4.0,
 ) -> Optional[Dict[str, float]]:
     if loader is None:
@@ -91,7 +92,7 @@ def evaluate_loader(
             heat_loss = masked_bce_with_logits(heat_logits, targets, valid_mask, pos_weight)
             coord_loss = masked_smooth_l1(coord_pred, coord_gt, valid_mask)
             aux_loss = F.binary_cross_entropy_with_logits(vis_logits, valid_mask.float())
-            loss = heat_loss + lambda_coord * coord_loss + 0.05 * aux_loss
+            loss = heat_loss + lambda_coord * coord_loss + aux_loss_weight * aux_loss
             total_loss += loss.item()
 
             dists = torch.norm(pred_xy - gt_kpts, dim=-1)
@@ -157,13 +158,29 @@ def resolve_stage_defaults(args: argparse.Namespace) -> argparse.Namespace:
         args.epochs = args.epochs or 150
         args.pos_weight = args.pos_weight or 200.0
         args.lambda_coord = args.lambda_coord or 0.10
-        args.normalize_coords = False
+        if args.normalize_coords is None:
+            args.normalize_coords = False
+        if args.augment_profile is None:
+            args.augment_profile = "basic"
+        if args.balance_scenes is None:
+            args.balance_scenes = False
+        if args.aux_loss_weight is None:
+            args.aux_loss_weight = 0.05
     else:
-        args.lr = args.lr or 3e-5
-        args.epochs = args.epochs or 15
-        args.pos_weight = args.pos_weight or 120.0
-        args.lambda_coord = args.lambda_coord or 0.25
-        args.normalize_coords = True
+        # Stage B defaults to a gentle fine-tune. The more aggressive recipe is
+        # still reachable via explicit CLI overrides.
+        args.lr = args.lr or 1e-5
+        args.epochs = args.epochs or 10
+        args.pos_weight = args.pos_weight or 160.0
+        args.lambda_coord = args.lambda_coord or 0.15
+        if args.normalize_coords is None:
+            args.normalize_coords = False
+        if args.augment_profile is None:
+            args.augment_profile = "basic"
+        if args.balance_scenes is None:
+            args.balance_scenes = False
+        if args.aux_loss_weight is None:
+            args.aux_loss_weight = 0.0
     return args
 
 
@@ -179,6 +196,31 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate.")
     parser.add_argument("--pos-weight", type=float, default=None, help="Override heatmap BCE positive weight.")
     parser.add_argument("--lambda-coord", type=float, default=None, help="Override coordinate loss weight.")
+    parser.add_argument(
+        "--augment-profile",
+        type=str,
+        default=None,
+        choices=["basic", "strong"],
+        help="Training augmentation profile. Defaults are stage-specific.",
+    )
+    parser.add_argument(
+        "--balance-scenes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable per-scene weighted sampling. Defaults are stage-specific.",
+    )
+    parser.add_argument(
+        "--aux-loss-weight",
+        type=float,
+        default=None,
+        help="Weight for the auxiliary visibility loss. Defaults are stage-specific.",
+    )
+    parser.add_argument(
+        "--normalize-coords",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Normalize coordinates for the coordinate loss. Defaults are stage-specific.",
+    )
     parser.add_argument("--eval-unseen-every", type=int, default=1, help="Evaluate val_unseen every N epochs.")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker count.")
     parser.add_argument("--output-dir", type=str, default="./models", help="Directory for checkpoints.")
@@ -226,12 +268,11 @@ def main() -> None:
             val_unseen_records = []
             use_random_split = True
 
-    augment_profile = "basic" if args.stage == "a" else "strong"
     train_dataset = PoseDatasetV7(
         args.data,
         records=train_records,
         augment=True,
-        augment_profile=augment_profile,
+        augment_profile=args.augment_profile,
         conf_hi=args.conf_hi,
     )
     val_seen_loader = None
@@ -257,7 +298,7 @@ def main() -> None:
         )
         val_unseen_loader = DataLoader(val_unseen_dataset, batch_size=args.batch_size, shuffle=False, num_workers=max(1, args.num_workers // 2), pin_memory=True)
 
-    balanced_by_scene = args.stage == "b" and not use_random_split and len(unique_scenes) > 1
+    balanced_by_scene = bool(args.balance_scenes) and not use_random_split and len(unique_scenes) > 1
     train_loader = make_train_loader(train_dataset, args.batch_size, args.num_workers, balanced_by_scene=balanced_by_scene)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -282,7 +323,9 @@ def main() -> None:
     print(f"Training samples: {len(train_dataset)} | val_seen: {len(val_seen_records)} | val_unseen: {len(val_unseen_records)}")
     print(
         f"Device: {device} | Stage: {args.stage.upper()} | Split: {split_desc} | "
-        f"Aug: {augment_profile} | LR: {args.lr:.1e} | PosWeight: {args.pos_weight:.1f} | LambdaCoord: {args.lambda_coord:.2f}"
+        f"Aug: {args.augment_profile} | BalanceScenes: {balanced_by_scene} | "
+        f"AuxLoss: {args.aux_loss_weight:.2f} | NormCoords: {args.normalize_coords} | "
+        f"LR: {args.lr:.1e} | PosWeight: {args.pos_weight:.1f} | LambdaCoord: {args.lambda_coord:.2f}"
     )
 
     for epoch in range(1, args.epochs + 1):
@@ -313,7 +356,7 @@ def main() -> None:
             heat_loss = masked_bce_with_logits(heat_logits, targets, valid_mask, args.pos_weight)
             coord_loss = masked_smooth_l1(coord_pred, coord_gt, valid_mask)
             aux_loss = F.binary_cross_entropy_with_logits(vis_logits, valid_mask.float())
-            loss = heat_loss + args.lambda_coord * coord_loss + 0.05 * aux_loss
+            loss = heat_loss + args.lambda_coord * coord_loss + args.aux_loss_weight * aux_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -327,6 +370,7 @@ def main() -> None:
             pos_weight=args.pos_weight,
             lambda_coord=args.lambda_coord,
             normalize_coords=args.normalize_coords,
+            aux_loss_weight=args.aux_loss_weight,
         ) or {"loss": avg_train_loss, "pck5": 0.0, "pck10": 0.0}
 
         val_unseen_metrics = None
@@ -338,6 +382,7 @@ def main() -> None:
                 pos_weight=args.pos_weight,
                 lambda_coord=args.lambda_coord,
                 normalize_coords=args.normalize_coords,
+                aux_loss_weight=args.aux_loss_weight,
             )
 
         scheduler.step(val_seen_metrics["loss"])
