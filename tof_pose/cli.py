@@ -48,13 +48,20 @@ def calibrate_floor(args: argparse.Namespace) -> int:
     pipeline = HybridToFPosePipeline(camera=None, pose_estimator=_NoOpEstimator(), config=PipelineConfig())
     with camera:
         frames = [camera.read() for _ in range(frames_to_collect)]
-    plane = pipeline.calibrate_floor(frames)
+    plane, diagnostics = pipeline.calibrate_floor(frames, with_diagnostics=True)
     if plane is None:
-        print("Floor calibration failed: no plane found", file=sys.stderr)
+        print("Floor calibration failed: not enough usable floor points for plane fitting.", file=sys.stderr)
+        print(json.dumps(diagnostics.to_json(), indent=2), file=sys.stderr)
+        print(
+            "Likely causes: the floor is not visible, a person/object is occupying the lower field of view, "
+            "or the camera confidence values are lower than the runtime threshold.",
+            file=sys.stderr,
+        )
         return 1
     output = args.output or Path("floor_plane.json")
     output.write_text(json.dumps(plane.to_json(), indent=2))
     print(f"Saved floor plane to {output}")
+    print(json.dumps({"diagnostics": diagnostics.to_json()}, indent=2))
     return 0
 
 

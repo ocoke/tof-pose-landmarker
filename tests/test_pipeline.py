@@ -48,6 +48,15 @@ class PipelineTests(unittest.TestCase):
         plane = pipeline.calibrate_floor([frame])
         self.assertIsNotNone(plane)
 
+    def test_floor_plane_low_confidence_fallback(self) -> None:
+        pipeline = HybridToFPosePipeline(camera=None, pose_estimator=_StubEstimator(), config=PipelineConfig())
+        depth = np.full((48, 64), 3.9, dtype=np.float32)
+        confidence = np.ones_like(depth, dtype=np.float32) * 0.8
+        frame = synthetic_frame(depth, confidence=confidence, timestamp=1.0)
+        plane, diagnostics = pipeline.calibrate_floor([frame], with_diagnostics=True)
+        self.assertIsNotNone(plane)
+        self.assertGreaterEqual(diagnostics.frames_relaxed_confidence, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

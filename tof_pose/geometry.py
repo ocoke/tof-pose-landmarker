@@ -26,6 +26,32 @@ class GeometryConfig:
     track_roi_alpha: float = 0.35
 
 
+@dataclass(slots=True)
+class FloorCalibrationDiagnostics:
+    frames_total: int = 0
+    frames_with_points: int = 0
+    strict_points_total: int = 0
+    lower_band_points_total: int = 0
+    used_points_total: int = 0
+    frames_relaxed_confidence: int = 0
+    frames_full_frame_fallback: int = 0
+    confidence_p95: float = 0.0
+    confidence_max: float = 0.0
+
+    def to_json(self) -> dict[str, float | int]:
+        return {
+            "frames_total": self.frames_total,
+            "frames_with_points": self.frames_with_points,
+            "strict_points_total": self.strict_points_total,
+            "lower_band_points_total": self.lower_band_points_total,
+            "used_points_total": self.used_points_total,
+            "frames_relaxed_confidence": self.frames_relaxed_confidence,
+            "frames_full_frame_fallback": self.frames_full_frame_fallback,
+            "confidence_p95": round(self.confidence_p95, 4),
+            "confidence_max": round(self.confidence_max, 4),
+        }
+
+
 def depth_to_point_cloud(
     depth_m: np.ndarray,
     intrinsics: CameraIntrinsics,
@@ -234,33 +260,79 @@ class GeometricPersonTracker:
         self.config = config or GeometryConfig()
         self.floor_plane: FloorPlane | None = None
         self.background = RunningBackgroundModel()
+        self.last_floor_calibration: FloorCalibrationDiagnostics | None = None
         self._previous_roi: tuple[int, int, int, int] | None = None
         self._cluster_counter = 0
 
-    def calibrate_floor(self, frames: Iterable[DepthFrame]) -> FloorPlane | None:
+    def _collect_floor_points(
+        self,
+        frames: Iterable[DepthFrame],
+    ) -> tuple[list[np.ndarray], FloorCalibrationDiagnostics]:
         stacked_points: list[np.ndarray] = []
+        diagnostics = FloorCalibrationDiagnostics()
+        conf_p95_values: list[float] = []
+        conf_max_values: list[float] = []
         for frame in frames:
-            valid = (
+            diagnostics.frames_total += 1
+            depth_valid = (
                 frame.valid_mask
                 & (frame.depth_m >= self.config.min_depth_m)
                 & (frame.depth_m <= self.config.max_cluster_depth_m)
-                & (frame.confidence >= self.config.confidence_threshold)
             )
-            lower_half = np.zeros_like(valid)
-            lower_half[valid.shape[0] // 2 :, :] = True
-            points, _ = depth_to_point_cloud(frame.depth_m, frame.intrinsics, valid & lower_half)
+
+            conf_values = frame.confidence[depth_valid]
+            if conf_values.size:
+                conf_p95_values.append(float(np.percentile(conf_values, 95)))
+                conf_max_values.append(float(np.max(conf_values)))
+
+            lower_band = np.zeros_like(depth_valid)
+            lower_band[depth_valid.shape[0] // 3 :, :] = True
+            lower_candidates = depth_valid & lower_band
+            strict_candidates = lower_candidates & (frame.confidence >= self.config.confidence_threshold)
+
+            diagnostics.lower_band_points_total += int(np.count_nonzero(lower_candidates))
+            diagnostics.strict_points_total += int(np.count_nonzero(strict_candidates))
+
+            used_mask = strict_candidates
+            if np.count_nonzero(used_mask) < 256:
+                used_mask = lower_candidates
+                if np.count_nonzero(used_mask):
+                    diagnostics.frames_relaxed_confidence += 1
+
+            if np.count_nonzero(used_mask) < 256:
+                used_mask = depth_valid
+                if np.count_nonzero(used_mask):
+                    diagnostics.frames_full_frame_fallback += 1
+
+            points, _ = depth_to_point_cloud(frame.depth_m, frame.intrinsics, used_mask)
             if len(points):
                 stacked_points.append(points)
-            self.background.update(frame.depth_m, valid)
+                diagnostics.frames_with_points += 1
+                diagnostics.used_points_total += int(len(points))
+            self.background.update(frame.depth_m, depth_valid)
+
+        if conf_p95_values:
+            diagnostics.confidence_p95 = float(np.median(conf_p95_values))
+        if conf_max_values:
+            diagnostics.confidence_max = float(np.max(conf_max_values))
+        return stacked_points, diagnostics
+
+    def calibrate_floor(
+        self,
+        frames: Iterable[DepthFrame],
+        with_diagnostics: bool = False,
+    ) -> FloorPlane | tuple[FloorPlane | None, FloorCalibrationDiagnostics] | None:
+        stacked_points, diagnostics = self._collect_floor_points(frames)
+        self.last_floor_calibration = diagnostics
         if not stacked_points:
-            return None
+            return (None, diagnostics) if with_diagnostics else None
         cloud = np.concatenate(stacked_points, axis=0)
         plane = estimate_floor_plane(
             cloud,
             distance_threshold_m=self.config.floor_distance_threshold_m,
         )
         self.floor_plane = plane
-        return plane
+        return (plane, diagnostics) if with_diagnostics else plane
 
     def _foreground_mask(self, frame: DepthFrame) -> np.ndarray:
         valid = (

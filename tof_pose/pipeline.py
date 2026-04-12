@@ -9,7 +9,7 @@ import numpy as np
 
 from .camera import ArducamCameraAdapter
 from .filtering import ExponentialDepthFilter, OneEuroFilter
-from .geometry import GeometricPersonTracker, GeometryConfig, nearest_resize
+from .geometry import FloorCalibrationDiagnostics, GeometricPersonTracker, GeometryConfig, nearest_resize
 from .inference import PoseEstimator
 from .types import CameraIntrinsics, DepthFrame, FloorPlane, Pose2D, Pose3D, TrackedPerson
 
@@ -46,8 +46,12 @@ class HybridToFPosePipeline:
             beta=self.config.joint_filter_beta,
         )
 
-    def calibrate_floor(self, frames: list[DepthFrame]) -> FloorPlane | None:
-        return self.tracker.calibrate_floor(frames)
+    def calibrate_floor(
+        self,
+        frames: list[DepthFrame],
+        with_diagnostics: bool = False,
+    ) -> FloorPlane | tuple[FloorPlane | None, FloorCalibrationDiagnostics] | None:
+        return self.tracker.calibrate_floor(frames, with_diagnostics=with_diagnostics)
 
     def load_floor_plane(self, path: str | Path) -> FloorPlane:
         payload = json.loads(Path(path).read_text())
