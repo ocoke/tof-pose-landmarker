@@ -1,0 +1,365 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+
+import numpy as np
+
+from .types import CameraIntrinsics, DepthFrame, FloorPlane, TrackedPerson
+
+
+@dataclass(slots=True)
+class GeometryConfig:
+    min_depth_m: float = 0.4
+    max_depth_m: float = 4.0
+    confidence_threshold: float = 30.0
+    background_threshold_m: float = 0.12
+    floor_distance_threshold_m: float = 0.04
+    min_component_pixels: int = 120
+    roi_margin_px: int = 18
+    max_missing_background_frames: int = 45
+    min_human_height_m: float = 0.55
+    max_human_height_m: float = 2.3
+    min_human_width_m: float = 0.15
+    max_human_width_m: float = 1.5
+    max_cluster_depth_m: float = 4.5
+    track_roi_alpha: float = 0.35
+
+
+def depth_to_point_cloud(
+    depth_m: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    valid_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    v_idx, u_idx = np.nonzero(valid_mask)
+    if v_idx.size == 0:
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 2), dtype=np.int32)
+    z = depth_m[v_idx, u_idx]
+    points = intrinsics.back_project(u_idx.astype(np.float32), v_idx.astype(np.float32), z.astype(np.float32))
+    pixels = np.stack((v_idx, u_idx), axis=-1).astype(np.int32)
+    return points.astype(np.float32), pixels
+
+
+def estimate_floor_plane(
+    points_xyz: np.ndarray,
+    iterations: int = 128,
+    distance_threshold_m: float = 0.03,
+    rng_seed: int = 42,
+) -> FloorPlane | None:
+    if len(points_xyz) < 32:
+        return None
+
+    rng = np.random.default_rng(rng_seed)
+    best_support = 0
+    best_plane: FloorPlane | None = None
+
+    for _ in range(iterations):
+        sample_ids = rng.choice(len(points_xyz), size=3, replace=False)
+        p0, p1, p2 = points_xyz[sample_ids]
+        normal = np.cross(p1 - p0, p2 - p0)
+        norm = np.linalg.norm(normal)
+        if norm < 1e-6:
+            continue
+        normal = normal / norm
+        if normal[1] > 0.0:
+            normal = -normal
+        offset = -float(np.dot(normal, p0))
+        distances = np.abs(points_xyz @ normal + offset)
+        support = int(np.count_nonzero(distances < distance_threshold_m))
+        if support > best_support:
+            best_support = support
+            best_plane = FloorPlane(normal=normal.astype(np.float32), offset=offset, support=support)
+
+    return best_plane
+
+
+class RunningBackgroundModel:
+    def __init__(self, alpha: float = 0.05) -> None:
+        self.alpha = alpha
+        self.depth: np.ndarray | None = None
+        self.valid: np.ndarray | None = None
+        self.frames_seen = 0
+
+    def update(self, depth_m: np.ndarray, valid_mask: np.ndarray) -> None:
+        if self.depth is None or self.valid is None:
+            self.depth = depth_m.copy()
+            self.valid = valid_mask.copy()
+            self.frames_seen = 1
+            return
+
+        same_support = self.valid & valid_mask
+        self.depth[same_support] = (
+            self.alpha * depth_m[same_support] + (1.0 - self.alpha) * self.depth[same_support]
+        )
+        new_support = valid_mask & ~self.valid
+        self.depth[new_support] = depth_m[new_support]
+        self.valid |= valid_mask
+        self.frames_seen += 1
+
+    def foreground_mask(
+        self,
+        depth_m: np.ndarray,
+        valid_mask: np.ndarray,
+        threshold_m: float,
+    ) -> np.ndarray:
+        if self.depth is None or self.valid is None:
+            return valid_mask.copy()
+        delta = np.abs(depth_m - self.depth)
+        return valid_mask & (~self.valid | (delta > threshold_m))
+
+
+def _binary_dilate(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+    result = mask.copy()
+    for _ in range(iterations):
+        padded = np.pad(result, 1, constant_values=False)
+        views = [
+            padded[0:-2, 0:-2],
+            padded[0:-2, 1:-1],
+            padded[0:-2, 2:],
+            padded[1:-1, 0:-2],
+            padded[1:-1, 1:-1],
+            padded[1:-1, 2:],
+            padded[2:, 0:-2],
+            padded[2:, 1:-1],
+            padded[2:, 2:],
+        ]
+        result = np.logical_or.reduce(views)
+    return result
+
+
+def _binary_erode(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+    result = mask.copy()
+    for _ in range(iterations):
+        padded = np.pad(result, 1, constant_values=False)
+        views = [
+            padded[0:-2, 0:-2],
+            padded[0:-2, 1:-1],
+            padded[0:-2, 2:],
+            padded[1:-1, 0:-2],
+            padded[1:-1, 1:-1],
+            padded[1:-1, 2:],
+            padded[2:, 0:-2],
+            padded[2:, 1:-1],
+            padded[2:, 2:],
+        ]
+        result = np.logical_and.reduce(views)
+    return result
+
+
+def clean_mask(mask: np.ndarray) -> np.ndarray:
+    opened = _binary_dilate(_binary_erode(mask, iterations=1), iterations=1)
+    return _binary_erode(_binary_dilate(opened, iterations=1), iterations=1)
+
+
+def connected_components(mask: np.ndarray) -> list[np.ndarray]:
+    height, width = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components: list[np.ndarray] = []
+
+    for y in range(height):
+        for x in range(width):
+            if not mask[y, x] or visited[y, x]:
+                continue
+            stack = [(y, x)]
+            pixels: list[tuple[int, int]] = []
+            visited[y, x] = True
+            while stack:
+                cy, cx = stack.pop()
+                pixels.append((cy, cx))
+                y0 = max(cy - 1, 0)
+                y1 = min(cy + 2, height)
+                x0 = max(cx - 1, 0)
+                x1 = min(cx + 2, width)
+                for ny in range(y0, y1):
+                    for nx in range(x0, x1):
+                        if mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+            component = np.zeros_like(mask, dtype=bool)
+            ys, xs = zip(*pixels)
+            component[np.asarray(ys), np.asarray(xs)] = True
+            components.append(component)
+    return components
+
+
+def component_roi(mask: np.ndarray, margin_px: int, frame_shape: tuple[int, int]) -> tuple[int, int, int, int]:
+    ys, xs = np.nonzero(mask)
+    y0 = max(int(ys.min()) - margin_px, 0)
+    x0 = max(int(xs.min()) - margin_px, 0)
+    y1 = min(int(ys.max()) + margin_px + 1, frame_shape[0])
+    x1 = min(int(xs.max()) + margin_px + 1, frame_shape[1])
+
+    h = y1 - y0
+    w = x1 - x0
+    side = max(h, w)
+    cy = (y0 + y1) // 2
+    cx = (x0 + x1) // 2
+    half = side // 2
+    y0 = max(cy - half, 0)
+    x0 = max(cx - half, 0)
+    y1 = min(y0 + side, frame_shape[0])
+    x1 = min(x0 + side, frame_shape[1])
+    y0 = max(y1 - side, 0)
+    x0 = max(x1 - side, 0)
+    return (x0, y0, x1, y1)
+
+
+def _smooth_roi(
+    current: tuple[int, int, int, int],
+    previous: tuple[int, int, int, int] | None,
+    alpha: float,
+) -> tuple[int, int, int, int]:
+    if previous is None:
+        return current
+    cur = np.asarray(current, dtype=np.float32)
+    prev = np.asarray(previous, dtype=np.float32)
+    blended = alpha * cur + (1.0 - alpha) * prev
+    return tuple(int(round(v)) for v in blended)
+
+
+def _component_stats(
+    component_mask: np.ndarray,
+    frame: DepthFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    points, _ = depth_to_point_cloud(frame.depth_m, frame.intrinsics, component_mask)
+    if len(points) == 0:
+        return np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)
+    centroid = points.mean(axis=0)
+    extent = points.max(axis=0) - points.min(axis=0)
+    return centroid.astype(np.float32), extent.astype(np.float32)
+
+
+class GeometricPersonTracker:
+    def __init__(self, config: GeometryConfig | None = None) -> None:
+        self.config = config or GeometryConfig()
+        self.floor_plane: FloorPlane | None = None
+        self.background = RunningBackgroundModel()
+        self._previous_roi: tuple[int, int, int, int] | None = None
+        self._cluster_counter = 0
+
+    def calibrate_floor(self, frames: Iterable[DepthFrame]) -> FloorPlane | None:
+        stacked_points: list[np.ndarray] = []
+        for frame in frames:
+            valid = (
+                frame.valid_mask
+                & (frame.depth_m >= self.config.min_depth_m)
+                & (frame.depth_m <= self.config.max_cluster_depth_m)
+                & (frame.confidence >= self.config.confidence_threshold)
+            )
+            lower_half = np.zeros_like(valid)
+            lower_half[valid.shape[0] // 2 :, :] = True
+            points, _ = depth_to_point_cloud(frame.depth_m, frame.intrinsics, valid & lower_half)
+            if len(points):
+                stacked_points.append(points)
+            self.background.update(frame.depth_m, valid)
+        if not stacked_points:
+            return None
+        cloud = np.concatenate(stacked_points, axis=0)
+        plane = estimate_floor_plane(
+            cloud,
+            distance_threshold_m=self.config.floor_distance_threshold_m,
+        )
+        self.floor_plane = plane
+        return plane
+
+    def _foreground_mask(self, frame: DepthFrame) -> np.ndarray:
+        valid = (
+            frame.valid_mask
+            & (frame.depth_m >= self.config.min_depth_m)
+            & (frame.depth_m <= self.config.max_depth_m)
+            & (frame.confidence >= self.config.confidence_threshold)
+        )
+        foreground = self.background.foreground_mask(
+            frame.depth_m,
+            valid,
+            threshold_m=self.config.background_threshold_m,
+        )
+        if self.floor_plane is None:
+            return clean_mask(foreground)
+
+        points, pixels = depth_to_point_cloud(frame.depth_m, frame.intrinsics, foreground)
+        if len(points) == 0:
+            return np.zeros_like(foreground, dtype=bool)
+
+        distances = self.floor_plane.signed_distance(points)
+        keep = np.abs(distances) > self.config.floor_distance_threshold_m
+        out = np.zeros_like(foreground, dtype=bool)
+        kept_pixels = pixels[keep]
+        if len(kept_pixels):
+            out[kept_pixels[:, 0], kept_pixels[:, 1]] = True
+        return clean_mask(out)
+
+    def _score_component(
+        self,
+        component: np.ndarray,
+        centroid: np.ndarray,
+        extent: np.ndarray,
+    ) -> float:
+        pixels = int(component.sum())
+        if pixels < self.config.min_component_pixels:
+            return -1.0
+
+        height = float(abs(extent[1]))
+        width = float(max(abs(extent[0]), abs(extent[2])))
+        if not (self.config.min_human_height_m <= height <= self.config.max_human_height_m):
+            return -1.0
+        if not (self.config.min_human_width_m <= width <= self.config.max_human_width_m):
+            return -1.0
+
+        score = float(pixels)
+        if self._previous_roi is not None:
+            px, py, qx, qy = self._previous_roi
+            prev_center = np.asarray([(px + qx) / 2.0, (py + qy) / 2.0], dtype=np.float32)
+            ys, xs = np.nonzero(component)
+            comp_center = np.asarray([xs.mean(), ys.mean()], dtype=np.float32)
+            score -= float(np.linalg.norm(comp_center - prev_center)) * 2.0
+        score -= float(abs(centroid[2])) * 4.0
+        return score
+
+    def update(self, frame: DepthFrame) -> TrackedPerson | None:
+        mask = self._foreground_mask(frame)
+        if not mask.any():
+            self.background.update(frame.depth_m, frame.valid_mask)
+            return None
+
+        components = connected_components(mask)
+        best_component: np.ndarray | None = None
+        best_centroid = np.zeros(3, dtype=np.float32)
+        best_extent = np.zeros(3, dtype=np.float32)
+        best_score = -np.inf
+
+        for component in components:
+            centroid, extent = _component_stats(component, frame)
+            score = self._score_component(component, centroid, extent)
+            if score > best_score:
+                best_component = component
+                best_centroid = centroid
+                best_extent = extent
+                best_score = score
+
+        if best_component is None or best_score < 0.0:
+            self.background.update(frame.depth_m, frame.valid_mask)
+            return None
+
+        roi = component_roi(best_component, self.config.roi_margin_px, frame.shape)
+        roi = _smooth_roi(roi, self._previous_roi, self.config.track_roi_alpha)
+        self._previous_roi = roi
+        self._cluster_counter += 1
+        return TrackedPerson(
+            roi_px=roi,
+            cluster_id=self._cluster_counter,
+            centroid_xyz=best_centroid,
+            extent_xyz=best_extent,
+            quality=float(best_score),
+            mask=best_component,
+        )
+
+
+def nearest_resize(image: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:
+    in_h, in_w = image.shape[:2]
+    out_h, out_w = output_shape
+    y_idx = np.clip(np.round(np.linspace(0, in_h - 1, out_h)).astype(np.int32), 0, in_h - 1)
+    x_idx = np.clip(np.round(np.linspace(0, in_w - 1, out_w)).astype(np.int32), 0, in_w - 1)
+    if image.ndim == 2:
+        return image[y_idx][:, x_idx]
+    return image[y_idx][:, x_idx, :]
