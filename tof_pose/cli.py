@@ -20,6 +20,7 @@ def _build_camera(args: argparse.Namespace) -> ArducamCameraAdapter:
         index=args.index,
         range_mode_m=args.range,
         request_timeout_ms=args.timeout_ms,
+        rotate=args.rotate,
     )
     return ArducamCameraAdapter(config=config)
 
@@ -30,6 +31,7 @@ def _common_parser(name: str) -> argparse.ArgumentParser:
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--range", type=int, default=4)
     parser.add_argument("--timeout-ms", type=int, default=200)
+    parser.add_argument("--rotate", type=int, choices=(0, 180), default=0)
     parser.add_argument("--floor-plane", type=Path)
     parser.add_argument("--frames", type=int, default=0)
     return parser

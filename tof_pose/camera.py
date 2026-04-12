@@ -31,6 +31,15 @@ class CameraConfig:
     range_mode_m: int = 4
     request_timeout_ms: int = 200
     start_frame_type: str = "DEPTH"
+    rotate: int = 0
+
+
+def _rotate_image(image: np.ndarray, rotate: int) -> np.ndarray:
+    if rotate == 0:
+        return image
+    if rotate == 180:
+        return np.rot90(image, 2)
+    raise CameraError(f"Unsupported rotation: {rotate}. Only 0 and 180 are supported.")
 
 
 class ArducamCameraAdapter:
@@ -104,6 +113,9 @@ class ArducamCameraAdapter:
         finally:
             self._cam.releaseFrame(frame)
 
+        depth = _rotate_image(depth, self.config.rotate)
+        amplitude = _rotate_image(amplitude, self.config.rotate)
+        confidence = _rotate_image(confidence, self.config.rotate)
         valid = np.isfinite(depth) & np.isfinite(amplitude) & np.isfinite(confidence) & (depth > 0.0)
         return DepthFrame(
             depth_m=depth,
@@ -129,6 +141,7 @@ class ArducamCameraAdapter:
         return {
             "sdk_version": self.sdk_version(),
             "connection": self.config.connection,
+            "rotate": self.config.rotate,
             "frame_type": str(ac.FrameType.DEPTH),
             "frame_methods": frame_methods,
         }

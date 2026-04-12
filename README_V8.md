@@ -61,10 +61,17 @@ Calibrate and save the floor plane from empty-scene frames:
 tof-pose calibrate-floor --output floor_plane.json --frames 45
 ```
 
+If the camera is mounted upside down, add:
+
+```bash
+--rotate 180
+```
+
 Run the no-fine-tune demo baseline with MoveNet:
 
 ```bash
 tof-pose run-demo \
+  --rotate 180 \
   --movenet-model models/movenet_singlepose_lightning_int8.tflite \
   --floor-plane floor_plane.json
 ```
@@ -73,6 +80,7 @@ Run the production path with a custom tiny TFLite model:
 
 ```bash
 tof-pose run-production \
+  --rotate 180 \
   --pose-model /path/to/depth_pose_int8.tflite \
   --floor-plane floor_plane.json
 ```
