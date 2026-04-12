@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+from .camera import ArducamCameraAdapter, CameraConfig
+from .inference import HeatmapOffsetPoseEstimator, MoveNetEstimator
+from .pipeline import HybridToFPosePipeline, PipelineConfig
+
+
+def _build_camera(args: argparse.Namespace) -> ArducamCameraAdapter:
+    config = CameraConfig(
+        connection=args.connection,
+        index=args.index,
+        range_mode_m=args.range,
+        request_timeout_ms=args.timeout_ms,
+    )
+    return ArducamCameraAdapter(config=config)
+
+
+def _common_parser(name: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"tof-pose {name}")
+    parser.add_argument("--connection", default="CSI")
+    parser.add_argument("--index", type=int, default=0)
+    parser.add_argument("--range", type=int, default=4)
+    parser.add_argument("--timeout-ms", type=int, default=200)
+    parser.add_argument("--floor-plane", type=Path)
+    parser.add_argument("--frames", type=int, default=0)
+    return parser
+
+
+def inspect_camera(args: argparse.Namespace) -> int:
+    camera = _build_camera(args)
+    payload = camera.inspect()
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def calibrate_floor(args: argparse.Namespace) -> int:
+    camera = _build_camera(args)
+    frames_to_collect = max(args.frames, 30)
+    pipeline = HybridToFPosePipeline(camera=None, pose_estimator=_NoOpEstimator(), config=PipelineConfig())
+    with camera:
+        frames = [camera.read() for _ in range(frames_to_collect)]
+    plane = pipeline.calibrate_floor(frames)
+    if plane is None:
+        print("Floor calibration failed: no plane found", file=sys.stderr)
+        return 1
+    output = args.output or Path("floor_plane.json")
+    output.write_text(json.dumps(plane.to_json(), indent=2))
+    print(f"Saved floor plane to {output}")
+    return 0
+
+
+def run_demo(args: argparse.Namespace) -> int:
+    camera = _build_camera(args)
+    estimator = MoveNetEstimator(model_path=str(args.movenet_model), num_threads=args.threads)
+    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
+    if args.floor_plane:
+        pipeline.load_floor_plane(args.floor_plane)
+    return _run_loop(camera, pipeline, frames=args.frames)
+
+
+def run_production(args: argparse.Namespace) -> int:
+    camera = _build_camera(args)
+    estimator = HeatmapOffsetPoseEstimator(model_path=str(args.pose_model), num_threads=args.threads)
+    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
+    if args.floor_plane:
+        pipeline.load_floor_plane(args.floor_plane)
+    return _run_loop(camera, pipeline, frames=args.frames)
+
+
+def _run_loop(camera: ArducamCameraAdapter, pipeline: HybridToFPosePipeline, frames: int) -> int:
+    processed = 0
+    start = time.perf_counter()
+    with camera:
+        while frames <= 0 or processed < frames:
+            result = pipeline.run_once()
+            processed += 1
+            payload = {"frame": processed}
+            if result is not None:
+                track = result["track"]
+                pose3d = result["pose3d"]
+                payload.update(
+                    {
+                        "cluster_id": track.cluster_id,
+                        "quality": round(track.quality, 3),
+                        "roi_px": list(track.roi_px),
+                        "centroid_xyz": np.round(track.centroid_xyz, 4).tolist(),
+                        "valid_joints": int(np.count_nonzero(pose3d.valid)),
+                    }
+                )
+            print(json.dumps(payload))
+    elapsed = max(time.perf_counter() - start, 1e-6)
+    fps = processed / elapsed
+    print(json.dumps({"processed_frames": processed, "elapsed_s": round(elapsed, 3), "fps": round(fps, 2)}))
+    return 0
+
+
+class _NoOpEstimator:
+    def predict(self, roi_tensor: np.ndarray, roi_px: tuple[int, int, int, int]):
+        raise RuntimeError("No pose estimator is attached")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tof-pose")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    inspect_parser = _common_parser("inspect-camera")
+    inspect_parser.set_defaults(func=inspect_camera)
+    subparsers.add_parser("inspect-camera", parents=[inspect_parser], add_help=False)
+
+    calibrate_parser = _common_parser("calibrate-floor")
+    calibrate_parser.add_argument("--output", type=Path, default=Path("floor_plane.json"))
+    calibrate_parser.set_defaults(func=calibrate_floor)
+    subparsers.add_parser("calibrate-floor", parents=[calibrate_parser], add_help=False)
+
+    demo_parser = _common_parser("run-demo")
+    demo_parser.add_argument("--movenet-model", type=Path, required=True)
+    demo_parser.add_argument("--threads", type=int, default=4)
+    demo_parser.set_defaults(func=run_demo)
+    subparsers.add_parser("run-demo", parents=[demo_parser], add_help=False)
+
+    prod_parser = _common_parser("run-production")
+    prod_parser.add_argument("--pose-model", type=Path, required=True)
+    prod_parser.add_argument("--threads", type=int, default=4)
+    prod_parser.set_defaults(func=run_production)
+    subparsers.add_parser("run-production", parents=[prod_parser], add_help=False)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
