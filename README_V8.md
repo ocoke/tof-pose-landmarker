@@ -49,6 +49,12 @@ Inspect the camera and verify the latest SDK surface:
 tof-pose inspect-camera
 ```
 
+Download the demo model into the repository:
+
+```bash
+tof-pose fetch-models
+```
+
 Calibrate and save the floor plane from empty-scene frames:
 
 ```bash
@@ -59,7 +65,7 @@ Run the no-fine-tune demo baseline with MoveNet:
 
 ```bash
 tof-pose run-demo \
-  --movenet-model /path/to/movenet_lightning_int8.tflite \
+  --movenet-model models/movenet_singlepose_lightning_int8.tflite \
   --floor-plane floor_plane.json
 ```
 
@@ -122,3 +128,4 @@ python3 training/tiny_pose_tf.py export \
 
 - The no-fine-tune demo path is intentionally separated from the production path. It is a visibility baseline, not the final architecture.
 - The geometry front-end is deliberately stronger than a pure 2D image pipeline because the fixed-mount `4 m` setup benefits from floor/background geometry and point-cloud-derived ROI stabilization.
+- The repository tracks model metadata and download instructions, not large third-party `.tflite` binaries directly.

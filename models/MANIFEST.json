@@ -1,0 +1,8 @@
+{
+  "movenet_lightning_int8": {
+    "filename": "movenet_singlepose_lightning_int8.tflite",
+    "url": "https://tfhub.dev/google/lite-model/movenet/singlepose/lightning/tflite/int8/4?lite-format=tflite",
+    "source": "TensorFlow Hub",
+    "description": "No-fine-tune demo baseline model for amplitude ROI."
+  }
+}

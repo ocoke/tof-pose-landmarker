@@ -10,6 +10,7 @@ import numpy as np
 
 from .camera import ArducamCameraAdapter, CameraConfig
 from .inference import HeatmapOffsetPoseEstimator, MoveNetEstimator
+from .model_store import DEFAULT_MODELS_DIR, download_model, resolve_model_path
 from .pipeline import HybridToFPosePipeline, PipelineConfig
 
 
@@ -57,9 +58,18 @@ def calibrate_floor(args: argparse.Namespace) -> int:
     return 0
 
 
+def fetch_models(args: argparse.Namespace) -> int:
+    aliases = args.models or ["movenet_lightning_int8"]
+    for alias in aliases:
+        path = download_model(alias, models_dir=args.models_dir, force=args.force)
+        print(json.dumps({"model": alias, "path": str(path)}))
+    return 0
+
+
 def run_demo(args: argparse.Namespace) -> int:
     camera = _build_camera(args)
-    estimator = MoveNetEstimator(model_path=str(args.movenet_model), num_threads=args.threads)
+    model_path = args.movenet_model or resolve_model_path("movenet_lightning_int8", models_dir=args.models_dir)
+    estimator = MoveNetEstimator(model_path=str(model_path), num_threads=args.threads)
     pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
     if args.floor_plane:
         pipeline.load_floor_plane(args.floor_plane)
@@ -120,8 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate_parser.set_defaults(func=calibrate_floor)
     subparsers.add_parser("calibrate-floor", parents=[calibrate_parser], add_help=False)
 
+    fetch_parser = argparse.ArgumentParser(prog="tof-pose fetch-models")
+    fetch_parser.add_argument("--models", nargs="+", default=["movenet_lightning_int8"])
+    fetch_parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
+    fetch_parser.add_argument("--force", action="store_true")
+    fetch_parser.set_defaults(func=fetch_models)
+    subparsers.add_parser("fetch-models", parents=[fetch_parser], add_help=False)
+
     demo_parser = _common_parser("run-demo")
-    demo_parser.add_argument("--movenet-model", type=Path, required=True)
+    demo_parser.add_argument("--movenet-model", type=Path)
+    demo_parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     demo_parser.add_argument("--threads", type=int, default=4)
     demo_parser.set_defaults(func=run_demo)
     subparsers.add_parser("run-demo", parents=[demo_parser], add_help=False)

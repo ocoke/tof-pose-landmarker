@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -13,6 +14,11 @@ class InferenceError(RuntimeError):
 
 
 def _load_interpreter(model_path: str, num_threads: int):
+    path = Path(model_path)
+    if not path.exists():
+        raise InferenceError(
+            f"Model file not found: {path}. Run `tof-pose fetch-models` for the demo baseline or pass a real .tflite path."
+        )
     try:
         from tflite_runtime.interpreter import Interpreter  # type: ignore
     except ImportError:
@@ -22,7 +28,7 @@ def _load_interpreter(model_path: str, num_threads: int):
             raise InferenceError(
                 "Neither tflite_runtime nor tensorflow.lite is available. Install a TFLite runtime."
             ) from exc
-    interpreter = Interpreter(model_path=model_path, num_threads=num_threads)
+    interpreter = Interpreter(model_path=str(path), num_threads=num_threads)
     interpreter.allocate_tensors()
     return interpreter
 
