@@ -72,6 +72,7 @@ Run the no-fine-tune demo baseline with MoveNet:
 ```bash
 tof-pose run-demo \
   --rotate 180 \
+  --preview \
   --movenet-model models/movenet_singlepose_lightning_int8.tflite \
   --floor-plane floor_plane.json
 ```
@@ -81,9 +82,12 @@ Run the production path with a custom tiny TFLite model:
 ```bash
 tof-pose run-production \
   --rotate 180 \
+  --preview \
   --pose-model /path/to/depth_pose_int8.tflite \
   --floor-plane floor_plane.json
 ```
+
+The preview window shows amplitude and depth side-by-side with the tracked ROI and pose overlay. Press `q` or `Esc` to close it. This requires a local desktop session, VNC, or X11 forwarding; it will not open in a headless shell.
 
 ## Data contracts
 

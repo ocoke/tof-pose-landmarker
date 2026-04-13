@@ -12,6 +12,7 @@ from .camera import ArducamCameraAdapter, CameraConfig
 from .inference import HeatmapOffsetPoseEstimator, MoveNetEstimator
 from .model_store import DEFAULT_MODELS_DIR, download_model, resolve_model_path
 from .pipeline import HybridToFPosePipeline, PipelineConfig
+from .visualization import PreviewWindow
 
 
 def _build_camera(args: argparse.Namespace) -> ArducamCameraAdapter:
@@ -82,7 +83,7 @@ def run_demo(args: argparse.Namespace) -> int:
     pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
     if args.floor_plane:
         pipeline.load_floor_plane(args.floor_plane)
-    return _run_loop(camera, pipeline, frames=args.frames)
+    return _run_loop(camera, pipeline, frames=args.frames, preview=args.preview)
 
 
 def run_production(args: argparse.Namespace) -> int:
@@ -91,30 +92,40 @@ def run_production(args: argparse.Namespace) -> int:
     pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
     if args.floor_plane:
         pipeline.load_floor_plane(args.floor_plane)
-    return _run_loop(camera, pipeline, frames=args.frames)
+    return _run_loop(camera, pipeline, frames=args.frames, preview=args.preview)
 
 
-def _run_loop(camera: ArducamCameraAdapter, pipeline: HybridToFPosePipeline, frames: int) -> int:
+def _run_loop(camera: ArducamCameraAdapter, pipeline: HybridToFPosePipeline, frames: int, preview: bool = False) -> int:
     processed = 0
     start = time.perf_counter()
-    with camera:
-        while frames <= 0 or processed < frames:
-            result = pipeline.run_once()
-            processed += 1
-            payload = {"frame": processed}
-            if result is not None:
-                track = result["track"]
-                pose3d = result["pose3d"]
-                payload.update(
-                    {
-                        "cluster_id": track.cluster_id,
-                        "quality": round(track.quality, 3),
-                        "roi_px": list(track.roi_px),
-                        "centroid_xyz": np.round(track.centroid_xyz, 4).tolist(),
-                        "valid_joints": int(np.count_nonzero(pose3d.valid)),
-                    }
-                )
-            print(json.dumps(payload))
+    preview_window = PreviewWindow() if preview else None
+    try:
+        with camera:
+            while frames <= 0 or processed < frames:
+                frame = camera.read()
+                result = pipeline.process_frame(frame)
+                processed += 1
+                payload = {"frame": processed}
+                if result is not None:
+                    track = result["track"]
+                    pose3d = result["pose3d"]
+                    payload.update(
+                        {
+                            "cluster_id": track.cluster_id,
+                            "quality": round(track.quality, 3),
+                            "roi_px": list(track.roi_px),
+                            "centroid_xyz": np.round(track.centroid_xyz, 4).tolist(),
+                            "valid_joints": int(np.count_nonzero(pose3d.valid)),
+                        }
+                    )
+                print(json.dumps(payload))
+                if preview_window is not None:
+                    fps = processed / max(time.perf_counter() - start, 1e-6)
+                    if not preview_window.show(frame, result, fps=fps, frame_index=processed):
+                        break
+    finally:
+        if preview_window is not None:
+            preview_window.close()
     elapsed = max(time.perf_counter() - start, 1e-6)
     fps = processed / elapsed
     print(json.dumps({"processed_frames": processed, "elapsed_s": round(elapsed, 3), "fps": round(fps, 2)}))
@@ -150,12 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--movenet-model", type=Path)
     demo_parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     demo_parser.add_argument("--threads", type=int, default=4)
+    demo_parser.add_argument("--preview", action="store_true")
     demo_parser.set_defaults(func=run_demo)
     subparsers.add_parser("run-demo", parents=[demo_parser], add_help=False)
 
     prod_parser = _common_parser("run-production")
     prod_parser.add_argument("--pose-model", type=Path, required=True)
     prod_parser.add_argument("--threads", type=int, default=4)
+    prod_parser.add_argument("--preview", action="store_true")
     prod_parser.set_defaults(func=run_production)
     subparsers.add_parser("run-production", parents=[prod_parser], add_help=False)
     return parser
