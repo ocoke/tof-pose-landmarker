@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .camera import ArducamCameraAdapter, CameraConfig
+from .geometry import floor_candidate_masks
 from .inference import HeatmapOffsetPoseEstimator, MoveNetEstimator
 from .model_store import DEFAULT_MODELS_DIR, download_model, resolve_model_path
 from .pipeline import HybridToFPosePipeline, PipelineConfig
@@ -22,6 +23,7 @@ def _build_camera(args: argparse.Namespace) -> ArducamCameraAdapter:
         range_mode_m=args.range,
         request_timeout_ms=args.timeout_ms,
         rotate=args.rotate,
+        depth_unit=args.depth_unit,
     )
     return ArducamCameraAdapter(config=config)
 
@@ -33,6 +35,7 @@ def _common_parser(name: str) -> argparse.ArgumentParser:
     parser.add_argument("--range", type=int, default=4)
     parser.add_argument("--timeout-ms", type=int, default=200)
     parser.add_argument("--rotate", type=int, choices=(0, 180), default=0)
+    parser.add_argument("--depth-unit", choices=("auto", "m", "mm"), default="auto")
     parser.add_argument("--floor-plane", type=Path)
     parser.add_argument("--frames", type=int, default=0)
     return parser
@@ -48,9 +51,22 @@ def inspect_camera(args: argparse.Namespace) -> int:
 def calibrate_floor(args: argparse.Namespace) -> int:
     camera = _build_camera(args)
     frames_to_collect = max(args.frames, 30)
-    pipeline = HybridToFPosePipeline(camera=None, pose_estimator=_NoOpEstimator(), config=PipelineConfig())
-    with camera:
-        frames = [camera.read() for _ in range(frames_to_collect)]
+    config = PipelineConfig()
+    pipeline = HybridToFPosePipeline(camera=None, pose_estimator=_NoOpEstimator(), config=config)
+    preview_window = PreviewWindow(title="ToF Floor Calibration") if args.preview else None
+    frames = []
+    try:
+        with camera:
+            for frame_index in range(1, frames_to_collect + 1):
+                frame = camera.read()
+                frames.append(frame)
+                if preview_window is not None:
+                    masks = floor_candidate_masks(frame, config.geometry)
+                    if not preview_window.show_calibration(frame, masks, frame_index=frame_index):
+                        break
+    finally:
+        if preview_window is not None:
+            preview_window.close()
     plane, diagnostics = pipeline.calibrate_floor(frames, with_diagnostics=True)
     if plane is None:
         print("Floor calibration failed: not enough usable floor points for plane fitting.", file=sys.stderr)
@@ -147,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     calibrate_parser = _common_parser("calibrate-floor")
     calibrate_parser.add_argument("--output", type=Path, default=Path("floor_plane.json"))
+    calibrate_parser.add_argument("--preview", action="store_true")
     calibrate_parser.set_defaults(func=calibrate_floor)
     subparsers.add_parser("calibrate-floor", parents=[calibrate_parser], add_help=False)
 

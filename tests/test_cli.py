@@ -6,6 +6,12 @@ from tof_pose.cli import build_parser
 
 
 class CliTests(unittest.TestCase):
+    def test_calibrate_floor_accepts_preview_and_depth_unit(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["calibrate-floor", "--preview", "--depth-unit", "mm"])
+        self.assertTrue(args.preview)
+        self.assertEqual(args.depth_unit, "mm")
+
     def test_run_demo_accepts_preview_flag(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["run-demo", "--preview"])

@@ -58,7 +58,11 @@ tof-pose fetch-models
 Calibrate and save the floor plane from empty-scene frames:
 
 ```bash
-tof-pose calibrate-floor --output floor_plane.json --frames 45
+tof-pose calibrate-floor \
+  --depth-unit mm \
+  --preview \
+  --output floor_plane.json \
+  --frames 45
 ```
 
 If the camera is mounted upside down, add:
@@ -72,6 +76,7 @@ Run the no-fine-tune demo baseline with MoveNet:
 ```bash
 tof-pose run-demo \
   --rotate 180 \
+  --depth-unit mm \
   --preview \
   --movenet-model models/movenet_singlepose_lightning_int8.tflite \
   --floor-plane floor_plane.json
@@ -82,12 +87,13 @@ Run the production path with a custom tiny TFLite model:
 ```bash
 tof-pose run-production \
   --rotate 180 \
+  --depth-unit mm \
   --preview \
   --pose-model /path/to/depth_pose_int8.tflite \
   --floor-plane floor_plane.json
 ```
 
-The preview window shows amplitude and depth side-by-side with the tracked ROI and pose overlay. Press `q` or `Esc` to close it. This requires a local desktop session, VNC, or X11 forwarding; it will not open in a headless shell.
+The Arducam SDK returns depth in millimeters on current Pi builds, so pass `--depth-unit mm` if calibration shows zero usable depth points. The calibration preview shows amplitude, depth, and the exact candidate mask used for floor-plane fitting. The runtime preview shows amplitude and depth side-by-side with the tracked ROI and pose overlay. Press `q` or `Esc` to close either window. This requires a local desktop session, VNC, or X11 forwarding; it will not open in a headless shell.
 
 ## Data contracts
 

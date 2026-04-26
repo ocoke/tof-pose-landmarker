@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -42,6 +42,12 @@ class PoseEstimator(Protocol):
 class MoveNetEstimator:
     model_path: str
     num_threads: int = 4
+    interpreter: Any = field(init=False, repr=False)
+    input_details: dict[str, Any] = field(init=False, repr=False)
+    output_details: dict[str, Any] = field(init=False, repr=False)
+    input_h: int = field(init=False)
+    input_w: int = field(init=False)
+    input_c: int = field(init=False)
 
     def __post_init__(self) -> None:
         self.interpreter = _load_interpreter(self.model_path, self.num_threads)
@@ -80,6 +86,12 @@ class HeatmapOffsetPoseEstimator:
     model_path: str
     num_threads: int = 4
     score_threshold: float = 0.1
+    interpreter: Any = field(init=False, repr=False)
+    input_details: dict[str, Any] = field(init=False, repr=False)
+    output_details: list[dict[str, Any]] = field(init=False, repr=False)
+    input_h: int = field(init=False)
+    input_w: int = field(init=False)
+    input_c: int = field(init=False)
 
     def __post_init__(self) -> None:
         self.interpreter = _load_interpreter(self.model_path, self.num_threads)

@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from .geometry import FloorCandidateMasks
 from .types import DepthFrame, Pose2D
 
 
@@ -127,6 +128,69 @@ class PreviewWindow:
             ) from exc
         return key not in (27, ord("q"), ord("Q"))
 
+    def render_calibration(
+        self,
+        frame: DepthFrame,
+        masks: FloorCandidateMasks,
+        frame_index: int | None = None,
+    ) -> np.ndarray:
+        cv2 = self.cv2
+        amp_gray = _normalize_for_display(frame.amplitude)
+        amp_bgr = cv2.cvtColor(amp_gray, cv2.COLOR_GRAY2BGR)
+
+        depth_valid = frame.valid_mask & np.isfinite(frame.depth_m)
+        depth_gray = _normalize_for_display(frame.depth_m, valid_mask=depth_valid)
+        depth_bgr = cv2.applyColorMap(depth_gray, cv2.COLORMAP_TURBO)
+        depth_bgr[~depth_valid] = 0
+
+        candidate_bgr = np.zeros((*frame.depth_m.shape, 3), dtype=np.uint8)
+        candidate_bgr[masks.depth_valid] = (80, 80, 80)
+        candidate_bgr[masks.lower_candidates] = (255, 160, 0)
+        candidate_bgr[masks.strict_candidates] = (0, 220, 255)
+        candidate_bgr[masks.used_mask] = (0, 255, 0)
+
+        self._annotate_panel(amp_bgr, "Amplitude")
+        self._annotate_panel(depth_bgr, "Depth")
+        self._annotate_panel(candidate_bgr, "Floor Candidates")
+        self._put_lines(
+            candidate_bgr,
+            [
+                f"valid {int(np.count_nonzero(masks.depth_valid))}",
+                f"lower {int(np.count_nonzero(masks.lower_candidates))}",
+                f"strict {int(np.count_nonzero(masks.strict_candidates))}",
+                f"used {int(np.count_nonzero(masks.used_mask))}",
+            ],
+        )
+
+        canvas = np.concatenate([amp_bgr, depth_bgr, candidate_bgr], axis=1)
+        self._annotate_canvas(canvas, fps=None, frame_index=frame_index)
+        return canvas
+
+    def show_calibration(
+        self,
+        frame: DepthFrame,
+        masks: FloorCandidateMasks,
+        frame_index: int | None = None,
+    ) -> bool:
+        cv2 = self.cv2
+        image = self.render_calibration(frame, masks, frame_index=frame_index)
+        if not self._window_created:
+            try:
+                cv2.namedWindow(self.title, cv2.WINDOW_NORMAL)
+                self._window_created = True
+            except cv2.error as exc:  # type: ignore[attr-defined]
+                raise VisualizationError(
+                    "OpenCV preview could not open a GUI window. Run from a local desktop session, VNC, or X11-forwarded shell."
+                ) from exc
+        try:
+            cv2.imshow(self.title, image)
+            key = cv2.waitKey(self.wait_key_ms) & 0xFF
+        except cv2.error as exc:  # type: ignore[attr-defined]
+            raise VisualizationError(
+                "OpenCV preview failed while drawing the window. Run from a local desktop session, VNC, or X11-forwarded shell."
+            ) from exc
+        return key not in (27, ord("q"), ord("Q"))
+
     def close(self) -> None:
         if not self._window_created:
             return
@@ -176,6 +240,21 @@ class PreviewWindow:
             1,
             self.cv2.LINE_AA,
         )
+
+    def _put_lines(self, image: np.ndarray, lines: list[str]) -> None:
+        y = image.shape[0] - 10 - max(len(lines) - 1, 0) * 18
+        for line in lines:
+            self.cv2.putText(
+                image,
+                line,
+                (8, y),
+                self.cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                self.cv2.LINE_AA,
+            )
+            y += 18
 
     def _annotate_canvas(self, canvas: np.ndarray, fps: float | None, frame_index: int | None) -> None:
         parts: list[str] = []

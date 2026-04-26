@@ -4,7 +4,8 @@ import unittest
 
 import numpy as np
 
-from tof_pose.camera import _rotate_image
+from tof_pose.camera import _depth_to_meters, _rotate_image
+from tof_pose.geometry import GeometryConfig, floor_candidate_masks
 from tof_pose.pipeline import FakeCamera, HybridToFPosePipeline, PipelineConfig, synthetic_frame
 from tof_pose.types import Pose2D
 
@@ -58,10 +59,21 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNotNone(plane)
         self.assertGreaterEqual(diagnostics.frames_relaxed_confidence, 1)
 
+    def test_floor_candidates_accept_millimeter_depth_after_conversion(self) -> None:
+        depth_mm = np.full((48, 64), 3900.0, dtype=np.float32)
+        frame = synthetic_frame(_depth_to_meters(depth_mm, "mm"), timestamp=1.0)
+        masks = floor_candidate_masks(frame, GeometryConfig())
+        self.assertGreater(int(np.count_nonzero(masks.depth_valid)), 0)
+        self.assertGreater(int(np.count_nonzero(masks.used_mask)), 0)
+
     def test_rotate_image_180(self) -> None:
         image = np.asarray([[1, 2], [3, 4]], dtype=np.float32)
         rotated = _rotate_image(image, 180)
         np.testing.assert_array_equal(rotated, np.asarray([[4, 3], [2, 1]], dtype=np.float32))
+
+    def test_depth_to_meters_auto_detects_millimeters(self) -> None:
+        depth = np.asarray([[1000.0, 2000.0]], dtype=np.float32)
+        np.testing.assert_allclose(_depth_to_meters(depth, "auto"), np.asarray([[1.0, 2.0]], dtype=np.float32))
 
 
 if __name__ == "__main__":

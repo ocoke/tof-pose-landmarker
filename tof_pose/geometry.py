@@ -52,6 +52,39 @@ class FloorCalibrationDiagnostics:
         }
 
 
+@dataclass(slots=True)
+class FloorCandidateMasks:
+    depth_valid: np.ndarray
+    lower_candidates: np.ndarray
+    strict_candidates: np.ndarray
+    used_mask: np.ndarray
+
+
+def floor_candidate_masks(frame: DepthFrame, config: GeometryConfig) -> FloorCandidateMasks:
+    depth_valid = (
+        frame.valid_mask
+        & (frame.depth_m >= config.min_depth_m)
+        & (frame.depth_m <= config.max_cluster_depth_m)
+    )
+    lower_band = np.zeros_like(depth_valid)
+    lower_band[depth_valid.shape[0] // 3 :, :] = True
+    lower_candidates = depth_valid & lower_band
+    strict_candidates = lower_candidates & (frame.confidence >= config.confidence_threshold)
+
+    used_mask = strict_candidates
+    if np.count_nonzero(used_mask) < 256:
+        used_mask = lower_candidates
+    if np.count_nonzero(used_mask) < 256:
+        used_mask = depth_valid
+
+    return FloorCandidateMasks(
+        depth_valid=depth_valid,
+        lower_candidates=lower_candidates,
+        strict_candidates=strict_candidates,
+        used_mask=used_mask,
+    )
+
+
 def depth_to_point_cloud(
     depth_m: np.ndarray,
     intrinsics: CameraIntrinsics,
@@ -274,35 +307,23 @@ class GeometricPersonTracker:
         conf_max_values: list[float] = []
         for frame in frames:
             diagnostics.frames_total += 1
-            depth_valid = (
-                frame.valid_mask
-                & (frame.depth_m >= self.config.min_depth_m)
-                & (frame.depth_m <= self.config.max_cluster_depth_m)
-            )
+            masks = floor_candidate_masks(frame, self.config)
+            depth_valid = masks.depth_valid
 
             conf_values = frame.confidence[depth_valid]
             if conf_values.size:
                 conf_p95_values.append(float(np.percentile(conf_values, 95)))
                 conf_max_values.append(float(np.max(conf_values)))
 
-            lower_band = np.zeros_like(depth_valid)
-            lower_band[depth_valid.shape[0] // 3 :, :] = True
-            lower_candidates = depth_valid & lower_band
-            strict_candidates = lower_candidates & (frame.confidence >= self.config.confidence_threshold)
+            diagnostics.lower_band_points_total += int(np.count_nonzero(masks.lower_candidates))
+            diagnostics.strict_points_total += int(np.count_nonzero(masks.strict_candidates))
 
-            diagnostics.lower_band_points_total += int(np.count_nonzero(lower_candidates))
-            diagnostics.strict_points_total += int(np.count_nonzero(strict_candidates))
+            used_mask = masks.used_mask
+            if np.array_equal(used_mask, masks.lower_candidates) and np.count_nonzero(used_mask):
+                diagnostics.frames_relaxed_confidence += 1
 
-            used_mask = strict_candidates
-            if np.count_nonzero(used_mask) < 256:
-                used_mask = lower_candidates
-                if np.count_nonzero(used_mask):
-                    diagnostics.frames_relaxed_confidence += 1
-
-            if np.count_nonzero(used_mask) < 256:
-                used_mask = depth_valid
-                if np.count_nonzero(used_mask):
-                    diagnostics.frames_full_frame_fallback += 1
+            if np.array_equal(used_mask, depth_valid) and np.count_nonzero(used_mask):
+                diagnostics.frames_full_frame_fallback += 1
 
             points, _ = depth_to_point_cloud(frame.depth_m, frame.intrinsics, used_mask)
             if len(points):
