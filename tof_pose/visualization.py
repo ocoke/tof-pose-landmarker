@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -62,6 +62,8 @@ def _pose_pixels(pose2d: Pose2D, model_shape: tuple[int, int]) -> np.ndarray:
 class PreviewWindow:
     title: str = "ToF Pose Preview"
     wait_key_ms: int = 1
+    cv2: Any = field(init=False, repr=False)
+    _window_created: bool = field(init=False, default=False, repr=False)
 
     def __post_init__(self) -> None:
         self.cv2 = _require_cv2()

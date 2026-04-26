@@ -43,22 +43,24 @@ python3 -m pip install -e '.[train]'
 
 ## CLI
 
+All commands below run from the repository checkout with `python3 -m tof_pose.cli`, so they do not depend on the installed `tof-pose` console script.
+
 Inspect the camera and verify the latest SDK surface:
 
 ```bash
-tof-pose inspect-camera
+python3 -m tof_pose.cli inspect-camera
 ```
 
 Download the demo model into the repository:
 
 ```bash
-tof-pose fetch-models
+python3 -m tof_pose.cli fetch-models
 ```
 
 Calibrate and save the floor plane from empty-scene frames:
 
 ```bash
-tof-pose calibrate-floor \
+python3 -m tof_pose.cli calibrate-floor \
   --depth-unit mm \
   --preview \
   --output floor_plane.json \
@@ -74,7 +76,7 @@ If the camera is mounted upside down, add:
 Run the no-fine-tune demo baseline with MoveNet:
 
 ```bash
-tof-pose run-demo \
+python3 -m tof_pose.cli run-demo \
   --rotate 180 \
   --depth-unit mm \
   --preview \
@@ -85,7 +87,7 @@ tof-pose run-demo \
 Run the production path with a custom tiny TFLite model:
 
 ```bash
-tof-pose run-production \
+python3 -m tof_pose.cli run-production \
   --rotate 180 \
   --depth-unit mm \
   --preview \
