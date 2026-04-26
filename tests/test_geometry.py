@@ -57,6 +57,14 @@ class GeometryTests(unittest.TestCase):
         self.assertGreater(x1, 36)
         self.assertLess(y0, 14)
         self.assertGreater(y1, 34)
+        diagnostics = tracker.last_diagnostics
+        self.assertEqual(diagnostics.track_source, "foreground")
+        self.assertFalse(diagnostics.held)
+        self.assertGreater(diagnostics.roi_area_frac, 0.0)
+        self.assertGreater(diagnostics.mask_pixels, 0)
+        self.assertGreaterEqual(diagnostics.candidate_count, 1)
+        self.assertIsNotNone(diagnostics.raw_roi_px)
+        self.assertIsNotNone(diagnostics.final_roi_px)
 
     def test_tracker_fallback_extracts_nearest_depth_blob(self) -> None:
         depth = np.full((48, 64), 3.8, dtype=np.float32)
@@ -81,6 +89,12 @@ class GeometryTests(unittest.TestCase):
         self.assertGreaterEqual(x1, 40)
         self.assertLessEqual(y0, 10)
         self.assertGreaterEqual(y1, 38)
+        diagnostics = tracker.last_diagnostics
+        self.assertEqual(diagnostics.track_source, "fallback")
+        self.assertFalse(diagnostics.held)
+        self.assertGreater(diagnostics.roi_area_frac, 0.0)
+        self.assertGreater(diagnostics.mask_pixels, 0)
+        self.assertGreaterEqual(diagnostics.candidate_count, 1)
 
     def test_tracker_fallback_prefers_compact_depth_slice_over_full_frame(self) -> None:
         depth = np.full((48, 64), 2.4, dtype=np.float32)
@@ -120,6 +134,11 @@ class GeometryTests(unittest.TestCase):
         )
         tracker.background.update(depth.copy(), np.ones_like(depth, dtype=bool))
         self.assertIsNone(tracker.update(frame))
+        diagnostics = tracker.last_diagnostics
+        self.assertEqual(diagnostics.track_source, "none")
+        self.assertFalse(diagnostics.held)
+        self.assertGreaterEqual(diagnostics.candidate_count, 1)
+        self.assertGreater(sum(diagnostics.reject_counts.values()), 0)
 
     def test_tracker_holds_previous_roi_on_abrupt_depth_jump(self) -> None:
         depth_a = np.full((48, 64), 3.8, dtype=np.float32)
@@ -148,6 +167,10 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(held.roi_px, first.roi_px)
         self.assertEqual(float(held.quality), 0.0)
         self.assertAlmostEqual(float(held.centroid_xyz[2]), float(first.centroid_xyz[2]), delta=1e-5)
+        diagnostics = tracker.last_diagnostics
+        self.assertEqual(diagnostics.track_source, "held")
+        self.assertTrue(diagnostics.held)
+        self.assertEqual(diagnostics.final_roi_px, first.roi_px)
 
     def test_clean_mask_preserves_core_blob(self) -> None:
         mask = np.zeros((8, 8), dtype=bool)

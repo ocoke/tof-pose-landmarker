@@ -5,6 +5,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import TextIO
 
 import numpy as np
 
@@ -28,6 +29,24 @@ def _build_camera(args: argparse.Namespace) -> ArducamCameraAdapter:
     return ArducamCameraAdapter(config=config)
 
 
+def _build_pipeline_config(args: argparse.Namespace) -> PipelineConfig:
+    config = PipelineConfig()
+    geometry = config.geometry
+    tuning_map = {
+        "confidence_threshold": "confidence_threshold",
+        "background_threshold_m": "background_threshold_m",
+        "fallback_depth_window_m": "fallback_depth_window_m",
+        "track_max_depth_jump_m": "track_max_depth_jump_m",
+        "roi_margin_px": "roi_margin_px",
+        "track_size_step_fraction": "track_max_size_step_fraction",
+    }
+    for arg_name, field_name in tuning_map.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            setattr(geometry, field_name, value)
+    return config
+
+
 def _common_parser(name: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"tof-pose {name}")
     parser.add_argument("--connection", default="CSI")
@@ -39,6 +58,20 @@ def _common_parser(name: str) -> argparse.ArgumentParser:
     parser.add_argument("--floor-plane", type=Path)
     parser.add_argument("--frames", type=int, default=0)
     return parser
+
+
+def _add_tracker_tuning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--confidence-threshold", type=float)
+    parser.add_argument("--background-threshold-m", type=float)
+    parser.add_argument("--fallback-depth-window-m", type=float)
+    parser.add_argument("--track-max-depth-jump-m", type=float)
+    parser.add_argument("--roi-margin-px", type=int)
+    parser.add_argument("--track-size-step-fraction", type=float)
+
+
+def _add_debug_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--debug-jsonl", type=Path)
+    parser.add_argument("--debug-every", type=int, default=1)
 
 
 def inspect_camera(args: argparse.Namespace) -> int:
@@ -96,31 +129,84 @@ def run_demo(args: argparse.Namespace) -> int:
     camera = _build_camera(args)
     model_path = args.movenet_model or resolve_model_path("movenet_lightning_int8", models_dir=args.models_dir)
     estimator = MoveNetEstimator(model_path=str(model_path), num_threads=args.threads)
-    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
+    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=_build_pipeline_config(args))
     if args.floor_plane:
         pipeline.load_floor_plane(args.floor_plane)
-    return _run_loop(camera, pipeline, frames=args.frames, preview=args.preview)
+    return _run_loop(
+        camera,
+        pipeline,
+        frames=args.frames,
+        preview=args.preview,
+        debug_jsonl=args.debug_jsonl,
+        debug_every=args.debug_every,
+    )
 
 
 def run_production(args: argparse.Namespace) -> int:
     camera = _build_camera(args)
     estimator = HeatmapOffsetPoseEstimator(model_path=str(args.pose_model), num_threads=args.threads)
-    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=PipelineConfig())
+    pipeline = HybridToFPosePipeline(camera=camera, pose_estimator=estimator, config=_build_pipeline_config(args))
     if args.floor_plane:
         pipeline.load_floor_plane(args.floor_plane)
-    return _run_loop(camera, pipeline, frames=args.frames, preview=args.preview)
+    return _run_loop(
+        camera,
+        pipeline,
+        frames=args.frames,
+        preview=args.preview,
+        debug_jsonl=args.debug_jsonl,
+        debug_every=args.debug_every,
+    )
 
 
-def _run_loop(camera: ArducamCameraAdapter, pipeline: HybridToFPosePipeline, frames: int, preview: bool = False) -> int:
+def _debug_payload(frame_index: int, result: dict | None, diagnostics, fps: float) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "frame": frame_index,
+        "fps": round(fps, 3),
+        "tracking_diagnostics": diagnostics.to_json() if diagnostics is not None else None,
+    }
+    if result is None:
+        payload["track"] = None
+        payload["valid_joints"] = 0
+        return payload
+
+    track = result["track"]
+    pose3d = result["pose3d"]
+    payload["track"] = {
+        "cluster_id": track.cluster_id,
+        "quality": round(track.quality, 3),
+        "roi_px": list(track.roi_px),
+        "centroid_xyz": np.round(track.centroid_xyz, 4).tolist(),
+        "extent_xyz": np.round(track.extent_xyz, 4).tolist(),
+    }
+    payload["valid_joints"] = int(np.count_nonzero(pose3d.valid))
+    return payload
+
+
+def _write_debug_payload(handle: TextIO, payload: dict[str, object]) -> None:
+    handle.write(json.dumps(payload) + "\n")
+    handle.flush()
+
+
+def _run_loop(
+    camera: ArducamCameraAdapter,
+    pipeline: HybridToFPosePipeline,
+    frames: int,
+    preview: bool = False,
+    debug_jsonl: Path | None = None,
+    debug_every: int = 1,
+) -> int:
     processed = 0
     start = time.perf_counter()
     preview_window = PreviewWindow() if preview else None
+    debug_file = debug_jsonl.open("w") if debug_jsonl is not None else None
+    debug_every = max(int(debug_every), 1)
     try:
         with camera:
             while frames <= 0 or processed < frames:
                 frame = camera.read()
                 result = pipeline.process_frame(frame)
                 processed += 1
+                fps = processed / max(time.perf_counter() - start, 1e-6)
                 payload = {"frame": processed}
                 if result is not None:
                     track = result["track"]
@@ -135,13 +221,19 @@ def _run_loop(camera: ArducamCameraAdapter, pipeline: HybridToFPosePipeline, fra
                         }
                     )
                 print(json.dumps(payload))
+                if debug_file is not None and processed % debug_every == 0:
+                    _write_debug_payload(
+                        debug_file,
+                        _debug_payload(processed, result, pipeline.tracker.last_diagnostics, fps),
+                    )
                 if preview_window is not None:
-                    fps = processed / max(time.perf_counter() - start, 1e-6)
                     if not preview_window.show(frame, result, fps=fps, frame_index=processed):
                         break
     finally:
         if preview_window is not None:
             preview_window.close()
+        if debug_file is not None:
+            debug_file.close()
     elapsed = max(time.perf_counter() - start, 1e-6)
     fps = processed / elapsed
     print(json.dumps({"processed_frames": processed, "elapsed_s": round(elapsed, 3), "fps": round(fps, 2)}))
@@ -179,6 +271,8 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     demo_parser.add_argument("--threads", type=int, default=4)
     demo_parser.add_argument("--preview", action="store_true")
+    _add_tracker_tuning_args(demo_parser)
+    _add_debug_args(demo_parser)
     demo_parser.set_defaults(func=run_demo)
     subparsers.add_parser("run-demo", parents=[demo_parser], add_help=False)
 
@@ -186,6 +280,8 @@ def build_parser() -> argparse.ArgumentParser:
     prod_parser.add_argument("--pose-model", type=Path, required=True)
     prod_parser.add_argument("--threads", type=int, default=4)
     prod_parser.add_argument("--preview", action="store_true")
+    _add_tracker_tuning_args(prod_parser)
+    _add_debug_args(prod_parser)
     prod_parser.set_defaults(func=run_production)
     subparsers.add_parser("run-production", parents=[prod_parser], add_help=False)
     return parser

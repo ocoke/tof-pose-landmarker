@@ -88,6 +88,7 @@ class HybridToFPosePipeline:
             "pose2d": pose2d,
             "pose3d": pose3d,
             "roi_tensor": roi_tensor,
+            "tracking_diagnostics": self.tracker.last_diagnostics,
         }
 
     def run_once(self) -> dict[str, Any] | None:

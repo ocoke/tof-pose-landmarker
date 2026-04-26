@@ -77,6 +77,16 @@ def _pose_pixels(pose2d: Pose2D, model_shape: tuple[int, int]) -> np.ndarray:
     return points
 
 
+def _diagnostics_payload(diagnostics: Any) -> dict[str, Any]:
+    if diagnostics is None:
+        return {}
+    if hasattr(diagnostics, "to_json"):
+        return diagnostics.to_json()
+    if isinstance(diagnostics, dict):
+        return diagnostics
+    return {}
+
+
 @dataclass(slots=True)
 class PreviewWindow:
     title: str = "ToF Pose Preview"
@@ -113,11 +123,18 @@ class PreviewWindow:
         else:
             track = result["track"]
             pose2d = result["pose2d"]
+            diagnostics = _diagnostics_payload(result.get("tracking_diagnostics"))
             pose_points = _pose_pixels(pose2d, result["roi_tensor"].shape[:2])
+            self._draw_tracking_debug(amp_bgr, track.mask, diagnostics)
+            self._draw_tracking_debug(depth_bgr, track.mask, diagnostics)
             self._draw_overlay(amp_bgr, track.roi_px, pose_points, pose2d.scores)
             self._draw_overlay(depth_bgr, track.roi_px, pose_points, pose2d.scores)
             self._put_status(amp_bgr, f"Track {track.cluster_id} q={track.quality:.2f}")
             self._put_status(depth_bgr, f"Valid joints {int(np.count_nonzero(result['pose3d'].valid))}")
+            debug_line = self._tracking_debug_line(diagnostics)
+            if debug_line:
+                self._put_lines(amp_bgr, [debug_line])
+                self._put_lines(depth_bgr, [debug_line])
 
         canvas = np.concatenate([amp_bgr, depth_bgr], axis=1)
         self._annotate_canvas(canvas, fps=fps, frame_index=frame_index)
@@ -243,6 +260,37 @@ class PreviewWindow:
             u, v = pose_points[idx]
             cv2.circle(image, (int(u), int(v)), 3, (255, 255, 255), -1)
             cv2.circle(image, (int(u), int(v)), 5, (0, 140, 255), 1)
+
+    def _draw_tracking_debug(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray,
+        diagnostics: dict[str, Any],
+    ) -> None:
+        cv2 = self.cv2
+        if mask.shape == image.shape[:2] and np.any(mask):
+            mask_u8 = (mask.astype(np.uint8) * 255)
+            contour_result = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = contour_result[-2]
+            cv2.drawContours(image, contours, -1, (255, 0, 255), 1)
+
+        raw_roi = diagnostics.get("raw_roi_px")
+        final_roi = diagnostics.get("final_roi_px")
+        if raw_roi is not None:
+            x0, y0, x1, y1 = [int(v) for v in raw_roi]
+            cv2.rectangle(image, (x0, y0), (x1 - 1, y1 - 1), (255, 170, 0), 1)
+        if final_roi is not None:
+            x0, y0, x1, y1 = [int(v) for v in final_roi]
+            cv2.rectangle(image, (x0, y0), (x1 - 1, y1 - 1), (0, 255, 0), 1)
+
+    def _tracking_debug_line(self, diagnostics: dict[str, Any]) -> str:
+        if not diagnostics:
+            return ""
+        source = diagnostics.get("track_source", "unknown")
+        held = int(bool(diagnostics.get("held", False)))
+        roi_area = float(diagnostics.get("roi_area_frac", 0.0))
+        candidates = int(diagnostics.get("candidate_count", 0))
+        return f"src={source} held={held} roi={roi_area:.2f} cand={candidates}"
 
     def _annotate_panel(self, image: np.ndarray, label: str) -> None:
         self.cv2.putText(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import numpy as np
@@ -27,13 +27,41 @@ class GeometryConfig:
     fallback_near_percentile: float = 12.0
     fallback_depth_window_m: float = 0.35
     fallback_max_component_fraction: float = 0.45
-    fallback_max_roi_fraction: float = 0.72
+    fallback_max_roi_fraction: float = 0.85
     track_max_depth_jump_m: float = 0.45
     track_depth_jump_penalty: float = 3200.0
     track_reacquire_after_frames: int = 5
     track_hold_frames: int = 3
     track_max_center_step_px: float = 24.0
     track_max_size_step_fraction: float = 0.12
+    max_candidate_roi_fraction: float = 0.85
+    full_height_roi_fraction: float = 0.95
+    full_height_min_fill_ratio: float = 0.16
+    min_previous_roi_iou: float = 0.08
+
+
+@dataclass(slots=True)
+class TrackingDiagnostics:
+    track_source: str = "none"
+    held: bool = False
+    roi_area_frac: float = 0.0
+    mask_pixels: int = 0
+    candidate_count: int = 0
+    reject_counts: dict[str, int] = field(default_factory=dict)
+    raw_roi_px: tuple[int, int, int, int] | None = None
+    final_roi_px: tuple[int, int, int, int] | None = None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "track_source": self.track_source,
+            "held": self.held,
+            "roi_area_frac": round(self.roi_area_frac, 4),
+            "mask_pixels": self.mask_pixels,
+            "candidate_count": self.candidate_count,
+            "reject_counts": dict(self.reject_counts),
+            "raw_roi_px": list(self.raw_roi_px) if self.raw_roi_px is not None else None,
+            "final_roi_px": list(self.final_roi_px) if self.final_roi_px is not None else None,
+        }
 
 
 @dataclass(slots=True)
@@ -293,6 +321,31 @@ def _roi_center_size(roi: tuple[int, int, int, int]) -> tuple[np.ndarray, np.nda
     return center, size
 
 
+def _roi_area_fraction(roi: tuple[int, int, int, int], frame_shape: tuple[int, int]) -> float:
+    x0, y0, x1, y1 = roi
+    area = max(x1 - x0, 0) * max(y1 - y0, 0)
+    frame_area = max(frame_shape[0] * frame_shape[1], 1)
+    return float(area / frame_area)
+
+
+def _roi_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    inter = max(ix1 - ix0, 0) * max(iy1 - iy0, 0)
+    area_a = max(ax1 - ax0, 0) * max(ay1 - ay0, 0)
+    area_b = max(bx1 - bx0, 0) * max(by1 - by0, 0)
+    union = area_a + area_b - inter
+    return float(inter / max(union, 1))
+
+
+def _bump_reject(reject_counts: dict[str, int], reason: str) -> None:
+    reject_counts[reason] = reject_counts.get(reason, 0) + 1
+
+
 def _roi_from_center_size(
     center: np.ndarray,
     size: np.ndarray,
@@ -364,6 +417,7 @@ class GeometricPersonTracker:
         self.floor_plane: FloorPlane | None = None
         self.background = RunningBackgroundModel()
         self.last_floor_calibration: FloorCalibrationDiagnostics | None = None
+        self.last_diagnostics = TrackingDiagnostics()
         self._previous_roi: tuple[int, int, int, int] | None = None
         self._previous_centroid: np.ndarray | None = None
         self._previous_extent: np.ndarray | None = None
@@ -470,6 +524,41 @@ class GeometricPersonTracker:
             return None
         return depth_delta * self.config.track_depth_jump_penalty
 
+    def _candidate_roi_metrics(
+        self,
+        component: np.ndarray,
+        frame: DepthFrame,
+    ) -> tuple[tuple[int, int, int, int], float, float]:
+        raw_roi = component_roi(component, self.config.roi_margin_px, frame.shape)
+        roi_area_frac = _roi_area_fraction(raw_roi, frame.shape)
+        roi_area = max((raw_roi[2] - raw_roi[0]) * (raw_roi[3] - raw_roi[1]), 1)
+        fill_ratio = int(component.sum()) / roi_area
+        return raw_roi, roi_area_frac, float(fill_ratio)
+
+    def _candidate_reject_reason(
+        self,
+        raw_roi: tuple[int, int, int, int],
+        roi_area_frac: float,
+        fill_ratio: float,
+        frame_shape: tuple[int, int],
+    ) -> str | None:
+        if roi_area_frac > self.config.max_candidate_roi_fraction and fill_ratio < self.config.full_height_min_fill_ratio:
+            return "roi_too_large"
+
+        height = frame_shape[0]
+        roi_height_frac = (raw_roi[3] - raw_roi[1]) / max(height, 1)
+        touches_full_height = raw_roi[1] <= 0 and raw_roi[3] >= height
+        if (
+            (touches_full_height or roi_height_frac >= self.config.full_height_roi_fraction)
+            and fill_ratio < self.config.full_height_min_fill_ratio
+        ):
+            return "full_height_low_fill"
+
+        if self._tracking_gate_active() and self._previous_roi is not None:
+            if _roi_iou(raw_roi, self._previous_roi) < self.config.min_previous_roi_iou:
+                return "low_previous_iou"
+        return None
+
     def _finalize_track(
         self,
         component: np.ndarray,
@@ -477,24 +566,37 @@ class GeometricPersonTracker:
         extent: np.ndarray,
         score: float,
         frame: DepthFrame,
+        source: str,
+        raw_roi: tuple[int, int, int, int],
+        candidate_count: int,
+        reject_counts: dict[str, int],
     ) -> TrackedPerson:
-        roi = component_roi(component, self.config.roi_margin_px, frame.shape)
-        roi = _stabilize_roi(
-            roi,
+        final_roi = _stabilize_roi(
+            raw_roi,
             self._previous_roi,
             self.config.track_roi_alpha,
             frame.shape,
             self.config.track_max_center_step_px,
             self.config.track_max_size_step_fraction,
         )
-        self._previous_roi = roi
+        self._previous_roi = final_roi
         self._previous_centroid = centroid.copy()
         self._previous_extent = extent.copy()
         self._previous_mask = component.copy()
         self._missed_tracks = 0
         self._cluster_counter += 1
+        self.last_diagnostics = TrackingDiagnostics(
+            track_source=source,
+            held=False,
+            roi_area_frac=_roi_area_fraction(final_roi, frame.shape),
+            mask_pixels=int(component.sum()),
+            candidate_count=candidate_count,
+            reject_counts=dict(reject_counts),
+            raw_roi_px=raw_roi,
+            final_roi_px=final_roi,
+        )
         return TrackedPerson(
-            roi_px=roi,
+            roi_px=final_roi,
             cluster_id=self._cluster_counter,
             centroid_xyz=centroid,
             extent_xyz=extent,
@@ -502,7 +604,13 @@ class GeometricPersonTracker:
             mask=component,
         )
 
-    def _hold_previous_track(self, frame: DepthFrame) -> TrackedPerson | None:
+    def _hold_previous_track(
+        self,
+        frame: DepthFrame,
+        candidate_count: int = 0,
+        reject_counts: dict[str, int] | None = None,
+    ) -> TrackedPerson | None:
+        reject_counts = reject_counts or {}
         if (
             self._previous_roi is None
             or self._previous_centroid is None
@@ -510,6 +618,12 @@ class GeometricPersonTracker:
             or self._missed_tracks >= self.config.track_hold_frames
         ):
             self._missed_tracks += 1
+            self.last_diagnostics = TrackingDiagnostics(
+                track_source="none",
+                held=False,
+                candidate_count=candidate_count,
+                reject_counts=dict(reject_counts),
+            )
             return None
 
         self._missed_tracks += 1
@@ -517,6 +631,16 @@ class GeometricPersonTracker:
         mask = np.zeros(frame.shape, dtype=bool)
         if self._previous_mask is not None and self._previous_mask.shape == frame.shape:
             mask = self._previous_mask.copy()
+        self.last_diagnostics = TrackingDiagnostics(
+            track_source="held",
+            held=True,
+            roi_area_frac=_roi_area_fraction(self._previous_roi, frame.shape),
+            mask_pixels=int(np.count_nonzero(mask)),
+            candidate_count=candidate_count,
+            reject_counts=dict(reject_counts),
+            raw_roi_px=self._previous_roi,
+            final_roi_px=self._previous_roi,
+        )
         return TrackedPerson(
             roi_px=self._previous_roi,
             cluster_id=self._cluster_counter,
@@ -531,24 +655,37 @@ class GeometricPersonTracker:
         component: np.ndarray,
         centroid: np.ndarray,
         extent: np.ndarray,
-    ) -> float:
+        frame: DepthFrame,
+        reject_counts: dict[str, int],
+    ) -> tuple[float, tuple[int, int, int, int] | None]:
         pixels = int(component.sum())
         if pixels < self.config.min_component_pixels:
-            return -1.0
+            _bump_reject(reject_counts, "too_few_pixels")
+            return -1.0, None
 
         height = float(abs(extent[1]))
         width = float(max(abs(extent[0]), abs(extent[2])))
         if not (self.config.min_human_height_m <= height <= self.config.max_human_height_m):
-            return -1.0
+            _bump_reject(reject_counts, "bad_height")
+            return -1.0, None
         if not (self.config.min_human_width_m <= width <= self.config.max_human_width_m):
-            return -1.0
+            _bump_reject(reject_counts, "bad_width")
+            return -1.0, None
+
+        raw_roi, roi_area_frac, fill_ratio = self._candidate_roi_metrics(component, frame)
+        reject_reason = self._candidate_reject_reason(raw_roi, roi_area_frac, fill_ratio, frame.shape)
+        if reject_reason is not None:
+            _bump_reject(reject_counts, reject_reason)
+            return -1.0, None
 
         motion_penalty = self._motion_penalty(centroid)
         if motion_penalty is None:
-            return -1.0
+            _bump_reject(reject_counts, "depth_jump")
+            return -1.0, None
 
         score = float(pixels)
         score -= motion_penalty
+        score -= roi_area_frac * 400.0
         if self._previous_roi is not None:
             px, py, qx, qy = self._previous_roi
             prev_center = np.asarray([(px + qx) / 2.0, (py + qy) / 2.0], dtype=np.float32)
@@ -556,7 +693,7 @@ class GeometricPersonTracker:
             comp_center = np.asarray([xs.mean(), ys.mean()], dtype=np.float32)
             score -= float(np.linalg.norm(comp_center - prev_center)) * 2.0
         score -= float(abs(centroid[2])) * 4.0
-        return score
+        return score, raw_roi
 
     def _fallback_nearest_track(self, frame: DepthFrame) -> TrackedPerson | None:
         valid = (
@@ -565,6 +702,10 @@ class GeometricPersonTracker:
             & (frame.depth_m <= self.config.max_depth_m)
         )
         if not np.any(valid):
+            self.last_diagnostics = TrackingDiagnostics(
+                track_source="none",
+                reject_counts={"no_valid_depth": 1},
+            )
             return None
 
         depths = frame.depth_m[valid]
@@ -572,6 +713,9 @@ class GeometricPersonTracker:
         best_score = -np.inf
         best_centroid = np.zeros(3, dtype=np.float32)
         best_extent = np.zeros(3, dtype=np.float32)
+        best_raw_roi: tuple[int, int, int, int] | None = None
+        candidate_count = 0
+        reject_counts: dict[str, int] = {}
 
         h, w = frame.shape
         frame_area = float(h * w)
@@ -602,34 +746,44 @@ class GeometricPersonTracker:
                 upper = min(anchor_depth + depth_window_m, self.config.max_depth_m)
                 mask = clean_mask(valid & (frame.depth_m >= lower) & (frame.depth_m <= upper))
                 if not mask.any():
+                    _bump_reject(reject_counts, "empty_depth_slice")
                     continue
 
                 for component in connected_components(mask):
+                    candidate_count += 1
                     pixels = int(component.sum())
                     if pixels < self.config.min_component_pixels:
+                        _bump_reject(reject_counts, "too_few_pixels")
+                        continue
+
+                    raw_roi, roi_area_frac, fill_ratio = self._candidate_roi_metrics(component, frame)
+                    reject_reason = self._candidate_reject_reason(raw_roi, roi_area_frac, fill_ratio, frame.shape)
+                    if reject_reason is not None:
+                        _bump_reject(reject_counts, reject_reason)
                         continue
 
                     ys, xs = np.nonzero(component)
-                    y0, y1 = int(ys.min()), int(ys.max()) + 1
-                    x0, x1 = int(xs.min()), int(xs.max()) + 1
-                    raw_w = x1 - x0
-                    raw_h = y1 - y0
-                    raw_roi_area = float(max(raw_w * raw_h, 1))
+                    raw_roi_area = float(
+                        max((raw_roi[2] - raw_roi[0]) * (raw_roi[3] - raw_roi[1]), 1)
+                    )
                     component_fraction = pixels / frame_area
                     roi_fraction = raw_roi_area / frame_area
                     if component_fraction > self.config.fallback_max_component_fraction:
+                        _bump_reject(reject_counts, "too_many_pixels")
                         continue
-                    if roi_fraction > self.config.fallback_max_roi_fraction:
+                    if roi_fraction > self.config.fallback_max_roi_fraction and fill_ratio < self.config.full_height_min_fill_ratio:
+                        _bump_reject(reject_counts, "fallback_roi_too_large")
                         continue
-                    if raw_w >= int(w * 0.94) and raw_h >= int(h * 0.94):
+                    if (raw_roi[2] - raw_roi[0]) >= int(w * 0.94) and (raw_roi[3] - raw_roi[1]) >= int(h * 0.94):
+                        _bump_reject(reject_counts, "near_full_frame")
                         continue
 
                     centroid, extent = _component_stats(component, frame)
                     motion_penalty = self._motion_penalty(centroid)
                     if motion_penalty is None:
+                        _bump_reject(reject_counts, "depth_jump")
                         continue
                     median_depth = float(np.median(frame.depth_m[component]))
-                    fill_ratio = pixels / raw_roi_area
                     compact_pixels = pixels * min(fill_ratio * 3.0, 1.0)
                     score = float(compact_pixels) - median_depth * 35.0 - roi_fraction * 250.0 - motion_penalty
                     if self._previous_roi is not None:
@@ -642,11 +796,28 @@ class GeometricPersonTracker:
                         best_score = score
                         best_centroid = centroid
                         best_extent = extent
+                        best_raw_roi = raw_roi
 
         if best_component is None:
+            self.last_diagnostics = TrackingDiagnostics(
+                track_source="none",
+                candidate_count=candidate_count,
+                reject_counts=reject_counts,
+            )
             return None
 
-        return self._finalize_track(best_component, best_centroid, best_extent, best_score, frame)
+        assert best_raw_roi is not None
+        return self._finalize_track(
+            best_component,
+            best_centroid,
+            best_extent,
+            best_score,
+            frame,
+            source="fallback",
+            raw_roi=best_raw_roi,
+            candidate_count=candidate_count,
+            reject_counts=reject_counts,
+        )
 
     def update(self, frame: DepthFrame) -> TrackedPerson | None:
         mask = self._foreground_mask(frame)
@@ -655,7 +826,12 @@ class GeometricPersonTracker:
             if fallback is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return fallback
-            held = self._hold_previous_track(frame)
+            fallback_diagnostics = self.last_diagnostics
+            held = self._hold_previous_track(
+                frame,
+                candidate_count=fallback_diagnostics.candidate_count,
+                reject_counts=fallback_diagnostics.reject_counts,
+            )
             if held is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return held
@@ -666,15 +842,19 @@ class GeometricPersonTracker:
         best_component: np.ndarray | None = None
         best_centroid = np.zeros(3, dtype=np.float32)
         best_extent = np.zeros(3, dtype=np.float32)
+        best_raw_roi: tuple[int, int, int, int] | None = None
         best_score = -np.inf
+        candidate_count = len(components)
+        reject_counts: dict[str, int] = {}
 
         for component in components:
             centroid, extent = _component_stats(component, frame)
-            score = self._score_component(component, centroid, extent)
+            score, raw_roi = self._score_component(component, centroid, extent, frame, reject_counts)
             if score > best_score:
                 best_component = component
                 best_centroid = centroid
                 best_extent = extent
+                best_raw_roi = raw_roi
                 best_score = score
 
         if best_component is None or best_score < 0.0:
@@ -682,14 +862,33 @@ class GeometricPersonTracker:
             if fallback is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return fallback
-            held = self._hold_previous_track(frame)
+            fallback_diagnostics = self.last_diagnostics
+            merged_reject_counts = dict(reject_counts)
+            for reason, count in fallback_diagnostics.reject_counts.items():
+                merged_reject_counts[reason] = merged_reject_counts.get(reason, 0) + count
+            held = self._hold_previous_track(
+                frame,
+                candidate_count=candidate_count + fallback_diagnostics.candidate_count,
+                reject_counts=merged_reject_counts,
+            )
             if held is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return held
             self.background.update(frame.depth_m, frame.valid_mask)
             return None
 
-        return self._finalize_track(best_component, best_centroid, best_extent, best_score, frame)
+        assert best_raw_roi is not None
+        return self._finalize_track(
+            best_component,
+            best_centroid,
+            best_extent,
+            best_score,
+            frame,
+            source="foreground",
+            raw_roi=best_raw_roi,
+            candidate_count=candidate_count,
+            reject_counts=reject_counts,
+        )
 
 
 def nearest_resize(image: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:
