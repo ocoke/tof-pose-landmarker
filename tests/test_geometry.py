@@ -121,6 +121,34 @@ class GeometryTests(unittest.TestCase):
         tracker.background.update(depth.copy(), np.ones_like(depth, dtype=bool))
         self.assertIsNone(tracker.update(frame))
 
+    def test_tracker_holds_previous_roi_on_abrupt_depth_jump(self) -> None:
+        depth_a = np.full((48, 64), 3.8, dtype=np.float32)
+        depth_a[10:38, 24:40] = 2.5
+        depth_b = np.full((48, 64), 3.8, dtype=np.float32)
+        depth_b[10:38, 24:40] = 1.8
+        confidence = np.zeros_like(depth_a, dtype=np.float32)
+
+        tracker = GeometricPersonTracker(
+            GeometryConfig(
+                min_component_pixels=20,
+                confidence_threshold=90.0,
+                min_human_height_m=2.5,
+                track_max_depth_jump_m=0.35,
+                track_hold_frames=2,
+            )
+        )
+        tracker.background.update(depth_a.copy(), np.ones_like(depth_a, dtype=bool))
+        first = tracker.update(synthetic_frame(depth_a, confidence=confidence, timestamp=1.0))
+        self.assertIsNotNone(first)
+        assert first is not None
+
+        held = tracker.update(synthetic_frame(depth_b, confidence=confidence, timestamp=1.1))
+        self.assertIsNotNone(held)
+        assert held is not None
+        self.assertEqual(held.roi_px, first.roi_px)
+        self.assertEqual(float(held.quality), 0.0)
+        self.assertAlmostEqual(float(held.centroid_xyz[2]), float(first.centroid_xyz[2]), delta=1e-5)
+
     def test_clean_mask_preserves_core_blob(self) -> None:
         mask = np.zeros((8, 8), dtype=bool)
         mask[2:6, 2:6] = True

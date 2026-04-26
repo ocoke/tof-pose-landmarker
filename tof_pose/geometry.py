@@ -28,6 +28,12 @@ class GeometryConfig:
     fallback_depth_window_m: float = 0.35
     fallback_max_component_fraction: float = 0.45
     fallback_max_roi_fraction: float = 0.72
+    track_max_depth_jump_m: float = 0.45
+    track_depth_jump_penalty: float = 3200.0
+    track_reacquire_after_frames: int = 5
+    track_hold_frames: int = 3
+    track_max_center_step_px: float = 24.0
+    track_max_size_step_fraction: float = 0.12
 
 
 @dataclass(slots=True)
@@ -280,6 +286,66 @@ def _smooth_roi(
     return tuple(int(round(v)) for v in blended)
 
 
+def _roi_center_size(roi: tuple[int, int, int, int]) -> tuple[np.ndarray, np.ndarray]:
+    x0, y0, x1, y1 = roi
+    center = np.asarray([(x0 + x1) / 2.0, (y0 + y1) / 2.0], dtype=np.float32)
+    size = np.asarray([max(x1 - x0, 1), max(y1 - y0, 1)], dtype=np.float32)
+    return center, size
+
+
+def _roi_from_center_size(
+    center: np.ndarray,
+    size: np.ndarray,
+    frame_shape: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    h, w = frame_shape
+    size = np.clip(size, np.asarray([4.0, 4.0], dtype=np.float32), np.asarray([w, h], dtype=np.float32))
+    x0 = int(round(float(center[0] - size[0] / 2.0)))
+    y0 = int(round(float(center[1] - size[1] / 2.0)))
+    x1 = int(round(float(center[0] + size[0] / 2.0)))
+    y1 = int(round(float(center[1] + size[1] / 2.0)))
+    x0 = min(max(x0, 0), max(w - 1, 0))
+    y0 = min(max(y0, 0), max(h - 1, 0))
+    x1 = min(max(x1, x0 + 1), w)
+    y1 = min(max(y1, y0 + 1), h)
+    if x1 - x0 < int(size[0]) and x0 == 0:
+        x1 = min(int(round(size[0])), w)
+    if y1 - y0 < int(size[1]) and y0 == 0:
+        y1 = min(int(round(size[1])), h)
+    if x1 - x0 < int(size[0]) and x1 == w:
+        x0 = max(w - int(round(size[0])), 0)
+    if y1 - y0 < int(size[1]) and y1 == h:
+        y0 = max(h - int(round(size[1])), 0)
+    return (x0, y0, x1, y1)
+
+
+def _stabilize_roi(
+    current: tuple[int, int, int, int],
+    previous: tuple[int, int, int, int] | None,
+    alpha: float,
+    frame_shape: tuple[int, int],
+    max_center_step_px: float,
+    max_size_step_fraction: float,
+) -> tuple[int, int, int, int]:
+    if previous is None:
+        return current
+
+    smoothed = _smooth_roi(current, previous, alpha)
+    prev_center, prev_size = _roi_center_size(previous)
+    cur_center, cur_size = _roi_center_size(smoothed)
+
+    center_delta = cur_center - prev_center
+    center_step = float(np.linalg.norm(center_delta))
+    if center_step > max_center_step_px:
+        cur_center = prev_center + center_delta * (max_center_step_px / max(center_step, 1e-6))
+
+    size_limit = max(float(max_size_step_fraction), 0.0)
+    min_size = prev_size * (1.0 - size_limit)
+    max_size = prev_size * (1.0 + size_limit)
+    cur_size = np.clip(cur_size, min_size, max_size)
+    return _roi_from_center_size(cur_center, cur_size, frame_shape)
+
+
 def _component_stats(
     component_mask: np.ndarray,
     frame: DepthFrame,
@@ -299,6 +365,10 @@ class GeometricPersonTracker:
         self.background = RunningBackgroundModel()
         self.last_floor_calibration: FloorCalibrationDiagnostics | None = None
         self._previous_roi: tuple[int, int, int, int] | None = None
+        self._previous_centroid: np.ndarray | None = None
+        self._previous_extent: np.ndarray | None = None
+        self._previous_mask: np.ndarray | None = None
+        self._missed_tracks = 0
         self._cluster_counter = 0
 
     def _collect_floor_points(
@@ -386,6 +456,76 @@ class GeometricPersonTracker:
             out[kept_pixels[:, 0], kept_pixels[:, 1]] = True
         return clean_mask(out)
 
+    def _tracking_gate_active(self) -> bool:
+        return (
+            self._previous_centroid is not None
+            and self._missed_tracks < self.config.track_reacquire_after_frames
+        )
+
+    def _motion_penalty(self, centroid: np.ndarray) -> float | None:
+        if not self._tracking_gate_active() or self._previous_centroid is None:
+            return 0.0
+        depth_delta = abs(float(centroid[2] - self._previous_centroid[2]))
+        if depth_delta > self.config.track_max_depth_jump_m:
+            return None
+        return depth_delta * self.config.track_depth_jump_penalty
+
+    def _finalize_track(
+        self,
+        component: np.ndarray,
+        centroid: np.ndarray,
+        extent: np.ndarray,
+        score: float,
+        frame: DepthFrame,
+    ) -> TrackedPerson:
+        roi = component_roi(component, self.config.roi_margin_px, frame.shape)
+        roi = _stabilize_roi(
+            roi,
+            self._previous_roi,
+            self.config.track_roi_alpha,
+            frame.shape,
+            self.config.track_max_center_step_px,
+            self.config.track_max_size_step_fraction,
+        )
+        self._previous_roi = roi
+        self._previous_centroid = centroid.copy()
+        self._previous_extent = extent.copy()
+        self._previous_mask = component.copy()
+        self._missed_tracks = 0
+        self._cluster_counter += 1
+        return TrackedPerson(
+            roi_px=roi,
+            cluster_id=self._cluster_counter,
+            centroid_xyz=centroid,
+            extent_xyz=extent,
+            quality=max(float(score), 0.0),
+            mask=component,
+        )
+
+    def _hold_previous_track(self, frame: DepthFrame) -> TrackedPerson | None:
+        if (
+            self._previous_roi is None
+            or self._previous_centroid is None
+            or self._previous_extent is None
+            or self._missed_tracks >= self.config.track_hold_frames
+        ):
+            self._missed_tracks += 1
+            return None
+
+        self._missed_tracks += 1
+        self._cluster_counter += 1
+        mask = np.zeros(frame.shape, dtype=bool)
+        if self._previous_mask is not None and self._previous_mask.shape == frame.shape:
+            mask = self._previous_mask.copy()
+        return TrackedPerson(
+            roi_px=self._previous_roi,
+            cluster_id=self._cluster_counter,
+            centroid_xyz=self._previous_centroid.copy(),
+            extent_xyz=self._previous_extent.copy(),
+            quality=0.0,
+            mask=mask,
+        )
+
     def _score_component(
         self,
         component: np.ndarray,
@@ -403,7 +543,12 @@ class GeometricPersonTracker:
         if not (self.config.min_human_width_m <= width <= self.config.max_human_width_m):
             return -1.0
 
+        motion_penalty = self._motion_penalty(centroid)
+        if motion_penalty is None:
+            return -1.0
+
         score = float(pixels)
+        score -= motion_penalty
         if self._previous_roi is not None:
             px, py, qx, qy = self._previous_roi
             prev_center = np.asarray([(px + qx) / 2.0, (py + qy) / 2.0], dtype=np.float32)
@@ -480,10 +625,13 @@ class GeometricPersonTracker:
                         continue
 
                     centroid, extent = _component_stats(component, frame)
+                    motion_penalty = self._motion_penalty(centroid)
+                    if motion_penalty is None:
+                        continue
                     median_depth = float(np.median(frame.depth_m[component]))
                     fill_ratio = pixels / raw_roi_area
                     compact_pixels = pixels * min(fill_ratio * 3.0, 1.0)
-                    score = float(compact_pixels) - median_depth * 35.0 - roi_fraction * 250.0
+                    score = float(compact_pixels) - median_depth * 35.0 - roi_fraction * 250.0 - motion_penalty
                     if self._previous_roi is not None:
                         px, py, qx, qy = self._previous_roi
                         prev_center = np.asarray([(px + qx) / 2.0, (py + qy) / 2.0], dtype=np.float32)
@@ -498,18 +646,7 @@ class GeometricPersonTracker:
         if best_component is None:
             return None
 
-        roi = component_roi(best_component, self.config.roi_margin_px, frame.shape)
-        roi = _smooth_roi(roi, self._previous_roi, self.config.track_roi_alpha)
-        self._previous_roi = roi
-        self._cluster_counter += 1
-        return TrackedPerson(
-            roi_px=roi,
-            cluster_id=self._cluster_counter,
-            centroid_xyz=best_centroid,
-            extent_xyz=best_extent,
-            quality=max(float(best_score), 0.0),
-            mask=best_component,
-        )
+        return self._finalize_track(best_component, best_centroid, best_extent, best_score, frame)
 
     def update(self, frame: DepthFrame) -> TrackedPerson | None:
         mask = self._foreground_mask(frame)
@@ -518,6 +655,10 @@ class GeometricPersonTracker:
             if fallback is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return fallback
+            held = self._hold_previous_track(frame)
+            if held is not None:
+                self.background.update(frame.depth_m, frame.valid_mask)
+                return held
             self.background.update(frame.depth_m, frame.valid_mask)
             return None
 
@@ -541,21 +682,14 @@ class GeometricPersonTracker:
             if fallback is not None:
                 self.background.update(frame.depth_m, frame.valid_mask)
                 return fallback
+            held = self._hold_previous_track(frame)
+            if held is not None:
+                self.background.update(frame.depth_m, frame.valid_mask)
+                return held
             self.background.update(frame.depth_m, frame.valid_mask)
             return None
 
-        roi = component_roi(best_component, self.config.roi_margin_px, frame.shape)
-        roi = _smooth_roi(roi, self._previous_roi, self.config.track_roi_alpha)
-        self._previous_roi = roi
-        self._cluster_counter += 1
-        return TrackedPerson(
-            roi_px=roi,
-            cluster_id=self._cluster_counter,
-            centroid_xyz=best_centroid,
-            extent_xyz=best_extent,
-            quality=float(best_score),
-            mask=best_component,
-        )
+        return self._finalize_track(best_component, best_centroid, best_extent, best_score, frame)
 
 
 def nearest_resize(image: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:

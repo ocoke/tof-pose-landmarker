@@ -89,7 +89,7 @@ class MoveNetEstimator:
         self.interpreter.invoke()
         output = self.interpreter.get_tensor(self.output_details["index"])
         keypoints = np.asarray(output[0, 0], dtype=np.float32)
-        return _movenet_to_pose15(keypoints, roi_px)
+        return _movenet_to_pose15(keypoints, roi_px, roi_tensor.shape[:2])
 
 
 @dataclass(slots=True)
@@ -158,10 +158,9 @@ class HeatmapOffsetPoseEstimator:
 def _movenet_to_pose15(
     keypoints17: np.ndarray,
     roi_px: tuple[int, int, int, int],
+    output_shape: tuple[int, int],
 ) -> Pose2D:
-    x0, y0, x1, y1 = roi_px
-    width = max(x1 - x0, 1)
-    height = max(y1 - y0, 1)
+    height, width = output_shape
 
     def _uv(idx: int) -> np.ndarray:
         y, x, _ = keypoints17[idx]
