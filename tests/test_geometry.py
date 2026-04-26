@@ -82,6 +82,45 @@ class GeometryTests(unittest.TestCase):
         self.assertLessEqual(y0, 10)
         self.assertGreaterEqual(y1, 38)
 
+    def test_tracker_fallback_prefers_compact_depth_slice_over_full_frame(self) -> None:
+        depth = np.full((48, 64), 2.4, dtype=np.float32)
+        depth[10:38, 24:40] = 1.8
+        confidence = np.zeros_like(depth, dtype=np.float32)
+        frame = synthetic_frame(depth, confidence=confidence, timestamp=1.0)
+
+        tracker = GeometricPersonTracker(
+            GeometryConfig(
+                min_component_pixels=20,
+                confidence_threshold=90.0,
+                min_human_height_m=2.5,
+                fallback_depth_window_m=0.9,
+            )
+        )
+        tracker.background.update(depth.copy(), np.ones_like(depth, dtype=bool))
+        result = tracker.update(frame)
+        self.assertIsNotNone(result)
+        assert result is not None
+        x0, y0, x1, y1 = result.roi_px
+        self.assertGreater(x0, 0)
+        self.assertLess(x1, 64)
+        self.assertLess(x1 - x0, 64)
+        self.assertEqual((y0, y1), (0, 48))
+
+    def test_tracker_fallback_rejects_scene_sized_blob(self) -> None:
+        depth = np.full((48, 64), 2.4, dtype=np.float32)
+        confidence = np.zeros_like(depth, dtype=np.float32)
+        frame = synthetic_frame(depth, confidence=confidence, timestamp=1.0)
+
+        tracker = GeometricPersonTracker(
+            GeometryConfig(
+                min_component_pixels=20,
+                confidence_threshold=90.0,
+                min_human_height_m=2.5,
+            )
+        )
+        tracker.background.update(depth.copy(), np.ones_like(depth, dtype=bool))
+        self.assertIsNone(tracker.update(frame))
+
     def test_clean_mask_preserves_core_blob(self) -> None:
         mask = np.zeros((8, 8), dtype=bool)
         mask[2:6, 2:6] = True

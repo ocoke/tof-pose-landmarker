@@ -25,7 +25,9 @@ class GeometryConfig:
     max_cluster_depth_m: float = 4.5
     track_roi_alpha: float = 0.35
     fallback_near_percentile: float = 12.0
-    fallback_depth_window_m: float = 0.9
+    fallback_depth_window_m: float = 0.35
+    fallback_max_component_fraction: float = 0.45
+    fallback_max_roi_fraction: float = 0.72
 
 
 @dataclass(slots=True)
@@ -421,29 +423,77 @@ class GeometricPersonTracker:
             return None
 
         depths = frame.depth_m[valid]
-        near = float(np.percentile(depths, self.config.fallback_near_percentile))
-        cutoff = min(near + self.config.fallback_depth_window_m, self.config.max_depth_m)
-        mask = clean_mask(valid & (frame.depth_m <= cutoff))
-        if not mask.any():
-            return None
-
-        components = connected_components(mask)
         best_component: np.ndarray | None = None
         best_score = -np.inf
         best_centroid = np.zeros(3, dtype=np.float32)
         best_extent = np.zeros(3, dtype=np.float32)
-        for component in components:
-            pixels = int(component.sum())
-            if pixels < self.config.min_component_pixels:
-                continue
-            centroid, extent = _component_stats(component, frame)
-            median_depth = float(np.median(frame.depth_m[component]))
-            score = float(pixels) - median_depth * 10.0
-            if score > best_score:
-                best_component = component
-                best_score = score
-                best_centroid = centroid
-                best_extent = extent
+
+        h, w = frame.shape
+        frame_area = float(h * w)
+        base = float(self.config.fallback_near_percentile)
+        percentiles = sorted(
+            {
+                max(1.0, base * 0.25),
+                max(1.0, base * 0.5),
+                base,
+                min(55.0, base * 1.5),
+                25.0,
+                35.0,
+                45.0,
+            }
+        )
+        windows = sorted(
+            {
+                max(0.12, min(0.25, self.config.fallback_depth_window_m)),
+                self.config.fallback_depth_window_m,
+                min(0.65, self.config.fallback_depth_window_m * 1.5),
+            }
+        )
+
+        for percentile in percentiles:
+            anchor_depth = float(np.percentile(depths, percentile))
+            for depth_window_m in windows:
+                lower = max(anchor_depth - 0.05, self.config.min_depth_m)
+                upper = min(anchor_depth + depth_window_m, self.config.max_depth_m)
+                mask = clean_mask(valid & (frame.depth_m >= lower) & (frame.depth_m <= upper))
+                if not mask.any():
+                    continue
+
+                for component in connected_components(mask):
+                    pixels = int(component.sum())
+                    if pixels < self.config.min_component_pixels:
+                        continue
+
+                    ys, xs = np.nonzero(component)
+                    y0, y1 = int(ys.min()), int(ys.max()) + 1
+                    x0, x1 = int(xs.min()), int(xs.max()) + 1
+                    raw_w = x1 - x0
+                    raw_h = y1 - y0
+                    raw_roi_area = float(max(raw_w * raw_h, 1))
+                    component_fraction = pixels / frame_area
+                    roi_fraction = raw_roi_area / frame_area
+                    if component_fraction > self.config.fallback_max_component_fraction:
+                        continue
+                    if roi_fraction > self.config.fallback_max_roi_fraction:
+                        continue
+                    if raw_w >= int(w * 0.94) and raw_h >= int(h * 0.94):
+                        continue
+
+                    centroid, extent = _component_stats(component, frame)
+                    median_depth = float(np.median(frame.depth_m[component]))
+                    fill_ratio = pixels / raw_roi_area
+                    compact_pixels = pixels * min(fill_ratio * 3.0, 1.0)
+                    score = float(compact_pixels) - median_depth * 35.0 - roi_fraction * 250.0
+                    if self._previous_roi is not None:
+                        px, py, qx, qy = self._previous_roi
+                        prev_center = np.asarray([(px + qx) / 2.0, (py + qy) / 2.0], dtype=np.float32)
+                        comp_center = np.asarray([xs.mean(), ys.mean()], dtype=np.float32)
+                        score -= float(np.linalg.norm(comp_center - prev_center)) * 1.5
+                    if score > best_score:
+                        best_component = component
+                        best_score = score
+                        best_centroid = centroid
+                        best_extent = extent
 
         if best_component is None:
             return None
