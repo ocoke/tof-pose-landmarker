@@ -13,6 +13,25 @@ class VisualizationError(RuntimeError):
     """Preview rendering failed."""
 
 
+SKELETON_EDGES_15 = (
+    (0, 1),
+    (1, 2),
+    (1, 3),
+    (3, 4),
+    (4, 5),
+    (1, 6),
+    (6, 7),
+    (7, 8),
+    (2, 9),
+    (9, 10),
+    (10, 11),
+    (2, 12),
+    (12, 13),
+    (13, 14),
+    (9, 12),
+)
+
+
 def _require_cv2() -> Any:
     try:
         import cv2  # type: ignore
@@ -212,6 +231,12 @@ class PreviewWindow:
         cv2 = self.cv2
         x0, y0, x1, y1 = roi_px
         cv2.rectangle(image, (x0, y0), (x1 - 1, y1 - 1), (0, 255, 0), 2)
+        for start_idx, end_idx in SKELETON_EDGES_15:
+            if scores[start_idx] <= 0.0 or scores[end_idx] <= 0.0:
+                continue
+            start = pose_points[start_idx]
+            end = pose_points[end_idx]
+            cv2.line(image, (int(start[0]), int(start[1])), (int(end[0]), int(end[1])), (0, 255, 255), 2)
         for idx, score in enumerate(scores):
             if score <= 0.0:
                 continue

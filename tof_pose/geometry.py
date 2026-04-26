@@ -24,6 +24,8 @@ class GeometryConfig:
     max_human_width_m: float = 1.5
     max_cluster_depth_m: float = 4.5
     track_roi_alpha: float = 0.35
+    fallback_near_percentile: float = 12.0
+    fallback_depth_window_m: float = 0.9
 
 
 @dataclass(slots=True)
@@ -409,9 +411,63 @@ class GeometricPersonTracker:
         score -= float(abs(centroid[2])) * 4.0
         return score
 
+    def _fallback_nearest_track(self, frame: DepthFrame) -> TrackedPerson | None:
+        valid = (
+            frame.valid_mask
+            & (frame.depth_m >= self.config.min_depth_m)
+            & (frame.depth_m <= self.config.max_depth_m)
+        )
+        if not np.any(valid):
+            return None
+
+        depths = frame.depth_m[valid]
+        near = float(np.percentile(depths, self.config.fallback_near_percentile))
+        cutoff = min(near + self.config.fallback_depth_window_m, self.config.max_depth_m)
+        mask = clean_mask(valid & (frame.depth_m <= cutoff))
+        if not mask.any():
+            return None
+
+        components = connected_components(mask)
+        best_component: np.ndarray | None = None
+        best_score = -np.inf
+        best_centroid = np.zeros(3, dtype=np.float32)
+        best_extent = np.zeros(3, dtype=np.float32)
+        for component in components:
+            pixels = int(component.sum())
+            if pixels < self.config.min_component_pixels:
+                continue
+            centroid, extent = _component_stats(component, frame)
+            median_depth = float(np.median(frame.depth_m[component]))
+            score = float(pixels) - median_depth * 10.0
+            if score > best_score:
+                best_component = component
+                best_score = score
+                best_centroid = centroid
+                best_extent = extent
+
+        if best_component is None:
+            return None
+
+        roi = component_roi(best_component, self.config.roi_margin_px, frame.shape)
+        roi = _smooth_roi(roi, self._previous_roi, self.config.track_roi_alpha)
+        self._previous_roi = roi
+        self._cluster_counter += 1
+        return TrackedPerson(
+            roi_px=roi,
+            cluster_id=self._cluster_counter,
+            centroid_xyz=best_centroid,
+            extent_xyz=best_extent,
+            quality=max(float(best_score), 0.0),
+            mask=best_component,
+        )
+
     def update(self, frame: DepthFrame) -> TrackedPerson | None:
         mask = self._foreground_mask(frame)
         if not mask.any():
+            fallback = self._fallback_nearest_track(frame)
+            if fallback is not None:
+                self.background.update(frame.depth_m, frame.valid_mask)
+                return fallback
             self.background.update(frame.depth_m, frame.valid_mask)
             return None
 
@@ -431,6 +487,10 @@ class GeometricPersonTracker:
                 best_score = score
 
         if best_component is None or best_score < 0.0:
+            fallback = self._fallback_nearest_track(frame)
+            if fallback is not None:
+                self.background.update(frame.depth_m, frame.valid_mask)
+                return fallback
             self.background.update(frame.depth_m, frame.valid_mask)
             return None
 

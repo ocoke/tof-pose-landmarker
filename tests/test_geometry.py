@@ -58,6 +58,30 @@ class GeometryTests(unittest.TestCase):
         self.assertLess(y0, 14)
         self.assertGreater(y1, 34)
 
+    def test_tracker_fallback_extracts_nearest_depth_blob(self) -> None:
+        depth = np.full((48, 64), 3.8, dtype=np.float32)
+        depth[10:38, 24:40] = 1.8
+        confidence = np.zeros_like(depth, dtype=np.float32)
+        frame = synthetic_frame(depth, confidence=confidence, timestamp=1.0)
+
+        tracker = GeometricPersonTracker(
+            GeometryConfig(
+                min_component_pixels=20,
+                confidence_threshold=90.0,
+                min_human_height_m=2.5,
+                fallback_depth_window_m=0.5,
+            )
+        )
+        tracker.background.update(depth.copy(), np.ones_like(depth, dtype=bool))
+        result = tracker.update(frame)
+        self.assertIsNotNone(result)
+        assert result is not None
+        x0, y0, x1, y1 = result.roi_px
+        self.assertLessEqual(x0, 24)
+        self.assertGreaterEqual(x1, 40)
+        self.assertLessEqual(y0, 10)
+        self.assertGreaterEqual(y1, 38)
+
     def test_clean_mask_preserves_core_blob(self) -> None:
         mask = np.zeros((8, 8), dtype=bool)
         mask[2:6, 2:6] = True

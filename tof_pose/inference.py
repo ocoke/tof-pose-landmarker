@@ -38,6 +38,16 @@ class PoseEstimator(Protocol):
         ...
 
 
+def _resize_nearest(image: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:
+    in_h, in_w = image.shape[:2]
+    out_h, out_w = output_shape
+    y_idx = np.clip(np.round(np.linspace(0, in_h - 1, out_h)).astype(np.int32), 0, in_h - 1)
+    x_idx = np.clip(np.round(np.linspace(0, in_w - 1, out_w)).astype(np.int32), 0, in_w - 1)
+    if image.ndim == 2:
+        return image[y_idx][:, x_idx]
+    return image[y_idx][:, x_idx, :]
+
+
 @dataclass(slots=True)
 class MoveNetEstimator:
     model_path: str
@@ -67,6 +77,7 @@ class MoveNetEstimator:
 
     def predict(self, roi_tensor: np.ndarray, roi_px: tuple[int, int, int, int]) -> Pose2D:
         amplitude = roi_tensor[..., 2] if roi_tensor.ndim == 3 else roi_tensor
+        amplitude = _resize_nearest(amplitude, (self.input_h, self.input_w))
         network_input = self._repeat_channels(amplitude.astype(np.float32), self.input_c)
         network_input = np.expand_dims(network_input, axis=0)
         if np.issubdtype(self.input_details["dtype"], np.integer):
