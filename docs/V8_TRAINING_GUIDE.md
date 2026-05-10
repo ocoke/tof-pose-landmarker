@@ -331,8 +331,8 @@ Outputs in `artifacts/v8_run1/`:
 | `--epochs` | 60 | hard cap; early stop usually triggers first |
 | `--batch-size` | 32 | drop if you run out of GPU memory |
 | `--learning-rate` | 1e-3 | drop to 3e-4 if loss is unstable |
-| `--alpha` | 0.5 | MobileNetV3-Small width; 0.75 is more accurate but slower |
-| `--backbone-weights` | `imagenet` | set to `''` to train from scratch (worse, but no internet needed) |
+| `--alpha` | 0.5 | MobileNetV2 width multiplier. With `--backbone-weights imagenet`, must be one of 0.35, 0.5, 0.75, 1.0, 1.3, 1.4. Any value works when training from scratch |
+| `--backbone-weights` | `imagenet` | set to `''` to train from scratch (worse, but no internet needed, and any alpha works) |
 | `--no-augment` | off | disable all augmentation - use only for debugging |
 
 ### Train on the Pi instead
@@ -469,7 +469,8 @@ Order of operations once you have a baseline:
 | PCK stuck near 0 after 10 epochs | Bad labels | Run Step 4's overlay sanity check on 20 random frames |
 | PCK trains well but real inference is awful | Train/inference distribution mismatch | Verify the pipeline patch landed: `grep -n input_c tof_pose/pipeline.py` should show two references in `_build_roi_tensor` |
 | `model.export` is missing | Old TF | Upgrade to TF 2.13+; otherwise it falls back to `tf.saved_model.save` automatically |
-| INT8 export errors with `Cannot quantize` | Hard-swish / hard-sigmoid ops | `train_v8.py` already passes `minimalistic=True` to MobileNetV3-Small to avoid this. If you changed the backbone, prefer ReLU activations |
+| INT8 export errors with `Cannot quantize` | Non-INT8-friendly activations | The default backbone is MobileNetV2 (ReLU6), which quantises cleanly. If you swapped to a backbone with hard-swish/h-sigmoid, switch back |
+| `ValueError: Layer count mismatch when loading weights` | Tried to load ImageNet weights for an alpha that has none, or for the `minimalistic` MobileNetV3 variant | Use one of the published alphas (`0.35, 0.5, 0.75, 1.0, 1.3, 1.4` for MobileNetV2), or pass `--backbone-weights ''` |
 
 ### Inference
 

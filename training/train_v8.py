@@ -516,25 +516,40 @@ def _make_dataset(
 
 # ------------------------------------------------------------------- model
 
+# MobileNetV2 ImageNet weights are published for these alpha values.
+# (MobileNetV3-Small only publishes 0.75 and 1.0, and not for the minimalistic
+# variant, which is why we switched.)
+_MOBILENETV2_IMAGENET_ALPHAS = (0.35, 0.5, 0.75, 1.0, 1.3, 1.4)
+
+
 def build_model(config: TrainConfig):
     import tensorflow as tf
 
     input_c = 2
     inputs = tf.keras.Input(shape=(config.input_size, config.input_size, input_c), name="roi")
 
-    # MobileNetV3-Small expects 3 channels for ImageNet weights. Lift 2 -> 3.
-    if config.backbone_weights == "imagenet":
+    weights = config.backbone_weights or None
+    alpha = float(config.backbone_alpha)
+    if weights == "imagenet" and alpha not in _MOBILENETV2_IMAGENET_ALPHAS:
+        raise ValueError(
+            f"--alpha {alpha} is not available with ImageNet weights. "
+            f"Pick one of {_MOBILENETV2_IMAGENET_ALPHAS}, or pass --backbone-weights '' "
+            "to train from scratch with any alpha."
+        )
+
+    # MobileNetV2 ImageNet weights expect 3 channels. Lift 2 -> 3 with a tiny
+    # learned stem so the rest of the backbone sees the expected input depth.
+    if weights == "imagenet":
         x = tf.keras.layers.Conv2D(3, 1, padding="same", name="stem_lift")(inputs)
     else:
         x = inputs
 
-    backbone = tf.keras.applications.MobileNetV3Small(
+    backbone = tf.keras.applications.MobileNetV2(
         input_shape=(config.input_size, config.input_size, 3),
-        alpha=config.backbone_alpha,
+        alpha=alpha,
         include_top=False,
-        weights=config.backbone_weights,
+        weights=weights,
         input_tensor=x,
-        minimalistic=True,  # uses ReLU rather than hard-swish - better INT8 fit
     )
 
     feat = backbone.output  # stride 32 -> 4x4 for 128 input
