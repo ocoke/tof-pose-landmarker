@@ -537,22 +537,24 @@ def build_model(config: TrainConfig):
             "to train from scratch with any alpha."
         )
 
-    # MobileNetV2 ImageNet weights expect 3 channels. Lift 2 -> 3 with a tiny
-    # learned stem so the rest of the backbone sees the expected input depth.
-    if weights == "imagenet":
-        x = tf.keras.layers.Conv2D(3, 1, padding="same", name="stem_lift")(inputs)
-    else:
-        x = inputs
-
+    # Build the backbone as a standalone sub-model with its own 3-channel
+    # input so the published ImageNet weights match exactly (104 layers).
+    # If we instead passed input_tensor= with our 2->3 lift inline, the
+    # stem_lift gets absorbed into the backbone's layer list and the
+    # saved weight file mismatches by one.
     backbone = tf.keras.applications.MobileNetV2(
         input_shape=(config.input_size, config.input_size, 3),
         alpha=alpha,
         include_top=False,
         weights=weights,
-        input_tensor=x,
     )
 
-    feat = backbone.output  # stride 32 -> 4x4 for 128 input
+    # Lift 2 -> 3 channels for the backbone to consume, then call it as a layer.
+    if input_c != 3:
+        lifted = tf.keras.layers.Conv2D(3, 1, padding="same", name="stem_lift")(inputs)
+    else:
+        lifted = inputs
+    feat = backbone(lifted)  # stride 32 -> 4x4 for 128 input
     x = tf.keras.layers.Conv2D(96, 1, padding="same", activation="relu", name="neck1")(feat)
     x = tf.keras.layers.UpSampling2D(size=2, interpolation="bilinear")(x)   # 8x8
     x = tf.keras.layers.SeparableConv2D(96, 3, padding="same", activation="relu")(x)
