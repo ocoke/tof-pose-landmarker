@@ -22,6 +22,10 @@ class PipelineConfig:
     depth_ema_alpha: float = 0.35
     joint_filter_min_cutoff: float = 1.2
     joint_filter_beta: float = 0.03
+    # Fixed-scale input normalisation - must match training.
+    # Defaults align with training/train_v8.py (mm/4000, conf/255).
+    depth_scale_m: float = 4.0
+    confidence_scale: float = 255.0
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
 
 
@@ -99,29 +103,29 @@ class HybridToFPosePipeline:
     def _build_roi_tensor(self, frame: DepthFrame, track: TrackedPerson) -> np.ndarray:
         x0, y0, x1, y1 = track.roi_px
         depth_roi = frame.depth_m[y0:y1, x0:x1]
-        amp_roi = frame.amplitude[y0:y1, x0:x1]
         conf_roi = frame.confidence[y0:y1, x0:x1]
 
         resized_depth = nearest_resize(depth_roi, self.config.roi_size).astype(np.float32)
-        resized_amp = nearest_resize(amp_roi, self.config.roi_size).astype(np.float32)
         resized_conf = nearest_resize(conf_roi, self.config.roi_size).astype(np.float32)
 
-        depth_valid = resized_depth > 0.0
-        if np.any(depth_valid):
-            near = np.percentile(resized_depth[depth_valid], 10)
-            far = np.percentile(resized_depth[depth_valid], 90)
-        else:
-            near, far = 0.0, 1.0
-        depth_norm = np.clip((resized_depth - near) / max(far - near, 1e-6), 0.0, 1.0)
+        # Fixed-scale normalisation, matching training/train_v8.py exactly.
+        depth_norm = np.clip(resized_depth / self.config.depth_scale_m, 0.0, 1.0)
+        conf_norm = np.clip(resized_conf / self.config.confidence_scale, 0.0, 1.0)
 
+        # Adapt to whatever channel count the loaded model expects.
+        input_c = int(getattr(self.pose_estimator, "input_c", 3))
+        if input_c == 2:
+            return np.stack((depth_norm, conf_norm), axis=-1).astype(np.float32)
+
+        amp_roi = frame.amplitude[y0:y1, x0:x1]
+        resized_amp = nearest_resize(amp_roi, self.config.roi_size).astype(np.float32)
         amp_valid = np.isfinite(resized_amp)
         if np.any(amp_valid):
-            low = np.percentile(resized_amp[amp_valid], 5)
-            high = np.percentile(resized_amp[amp_valid], 95)
+            low = float(np.percentile(resized_amp[amp_valid], 5))
+            high = float(np.percentile(resized_amp[amp_valid], 95))
         else:
             low, high = 0.0, 1.0
         amp_norm = np.clip((resized_amp - low) / max(high - low, 1e-6), 0.0, 1.0)
-        conf_norm = np.clip(resized_conf / max(np.max(resized_conf), 1e-6), 0.0, 1.0)
         return np.stack((depth_norm, conf_norm, amp_norm), axis=-1).astype(np.float32)
 
     def _filter_pose2d(self, pose2d: Pose2D, timestamp: float) -> Pose2D:
