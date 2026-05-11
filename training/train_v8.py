@@ -748,7 +748,11 @@ def train(args: argparse.Namespace) -> int:
 
         if plateau >= config.plateau_patience:
             current_lr *= 0.3
-            tf.keras.backend.set_value(model.optimizer.learning_rate, current_lr)
+            lr_var = model.optimizer.learning_rate
+            if hasattr(lr_var, "assign"):
+                lr_var.assign(current_lr)  # Keras 3 / tf.Variable
+            else:
+                model.optimizer.learning_rate = current_lr  # plain attribute
             plateau = 0
             print(f"  -> LR plateau, reducing to {current_lr:.1e}")
 
