@@ -70,3 +70,7 @@ experiments/*
 !experiments/.gitkeep
 checkpoints/*
 !checkpoints/.gitkeep
+
+*.pt
+runs/
+*.egg-info/
