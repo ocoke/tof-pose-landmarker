@@ -1,0 +1,1 @@
+"""Training objectives for Macchiato."""

@@ -1,0 +1,22 @@
+version: 9
+name: macchiato_pretrain
+stage: pretrain
+seed: 42
+
+data:
+  manifest: data/manifests/train.csv
+  sources: [itop, ntu]
+  processed_root: data/processed
+  image_size: [240, 240]
+  num_keypoints: 17
+
+model:
+  input_channels: 3
+  width_multiplier: 1.15
+
+training:
+  epochs: 150
+  batch_size: 32
+  learning_rate: 0.0001
+  checkpoint_dir: checkpoints/macchiato_pretrain
+  experiment_dir: experiments/macchiato_pretrain

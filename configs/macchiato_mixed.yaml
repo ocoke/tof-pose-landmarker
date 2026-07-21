@@ -1,0 +1,22 @@
+version: 9
+name: macchiato_mixed
+stage: mixed
+seed: 42
+
+data:
+  manifest: data/manifests/train.csv
+  sources: [arducam, itop, ntu]
+  processed_root: data/processed
+  image_size: [240, 240]
+  num_keypoints: 17
+
+model:
+  input_channels: 3
+  width_multiplier: 1.15
+
+training:
+  epochs: 75
+  batch_size: 32
+  learning_rate: 0.00005
+  checkpoint_dir: checkpoints/macchiato_mixed
+  experiment_dir: experiments/macchiato_mixed

@@ -1,0 +1,1 @@
+"""Macchiato model definitions."""

@@ -1,0 +1,1 @@
+"""Masked pose heatmap objectives."""

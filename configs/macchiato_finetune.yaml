@@ -1,0 +1,23 @@
+version: 9
+name: macchiato_finetune
+stage: finetune
+seed: 42
+
+data:
+  manifest: data/manifests/train.csv
+  sources: [arducam]
+  processed_root: data/processed
+  image_size: [240, 240]
+  num_keypoints: 17
+
+model:
+  input_channels: 3
+  width_multiplier: 1.15
+  initialize_from: checkpoints/macchiato_mixed/best.pth
+
+training:
+  epochs: 25
+  batch_size: 16
+  learning_rate: 0.00001
+  checkpoint_dir: checkpoints/macchiato_finetune
+  experiment_dir: experiments/macchiato_finetune
