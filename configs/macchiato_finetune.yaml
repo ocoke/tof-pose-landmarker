@@ -1,23 +1,70 @@
 version: 9
-name: macchiato_finetune
+name: macchiato_experiment_b
 stage: finetune
 seed: 42
 
 data:
-  manifest: data/manifests/train.csv
-  sources: [arducam]
-  processed_root: data/processed
-  image_size: [240, 240]
+  raw_root: data/raw/arducam
+  pose_root: data/processed/arducam/pose_coco17
+  manifests_dir: data/manifests
+  yolo_root: data/processed/arducam/yolo_pose
+  frame_size: [180, 240]
   num_keypoints: 17
+  depth_max_mm: 4000.0
+  confidence_max: 350.0
+  scene_gap_seconds: 180
+  minimum_valid_keypoints: 12
+  train_scene_count: 6
+  val_scene_count: 2
 
-model:
-  input_channels: 3
-  width_multiplier: 1.15
-  initialize_from: checkpoints/macchiato_mixed/best.pth
-
-training:
-  epochs: 25
+yolo:
+  model: yolo26n-pose.pt
+  dataset_yaml: data/processed/arducam/yolo_pose/dataset.yaml
+  image_size: 256
+  epochs: 100
   batch_size: 16
-  learning_rate: 0.00001
-  checkpoint_dir: checkpoints/macchiato_finetune
-  experiment_dir: experiments/macchiato_finetune
+  patience: 20
+  workers: 4
+  device: auto
+  deterministic: true
+  project: experiments/macchiato_b/yolo
+  run_name: yolo26n_pose_depth
+  augmentations:
+    hsv_h: 0.0
+    hsv_s: 0.0
+    hsv_v: 0.0
+    degrees: 5.0
+    translate: 0.1
+    scale: 0.2
+    fliplr: 0.5
+    flipud: 0.0
+    mosaic: 0.0
+    mixup: 0.0
+    rect: true
+
+unet:
+  input_channels: 3
+  num_keypoints: 17
+  width_multiplier: 1.15
+  image_size: [240, 240]
+  batch_size: 32
+  workers: 4
+  heatmap_sigma: 4.0
+  softargmax_beta: 4.0
+  weight_decay: 0.0001
+  checkpoint_dir: checkpoints/macchiato_b/unet
+  experiment_dir: experiments/macchiato_b/unet
+  early_stopping_patience: 7
+  lr_scheduler_patience: 3
+  stage_a:
+    epochs: 150
+    learning_rate: 0.0001
+    positive_weight: 200.0
+    coordinate_loss_weight: 0.10
+    visibility_loss_weight: 0.05
+  stage_b:
+    epochs: 10
+    learning_rate: 0.00001
+    positive_weight: 160.0
+    coordinate_loss_weight: 0.15
+    visibility_loss_weight: 0.0
