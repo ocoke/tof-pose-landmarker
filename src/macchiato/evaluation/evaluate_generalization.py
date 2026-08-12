@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,7 +13,7 @@ import numpy as np
 
 from macchiato.adapters.arducam_adapter import COCO_KEYPOINT_NAMES, keypoint_valid_mask, load_keypoints
 from macchiato.config import load_config, project_path
-from macchiato.evaluation.pose_metrics import PoseMetricAccumulator
+from macchiato.evaluation.pose_metrics import LatencyAccumulator, PoseMetricAccumulator
 from macchiato.preprocessing.depth_normalization import normalize_confidence, normalize_depth
 
 
@@ -40,15 +41,27 @@ def evaluate_rows(
     rows: list[dict[str, str]],
     project_root: Path,
     predictor: Callable[[dict[str, str]], np.ndarray | None],
+    latency_warmup_samples: int = 0,
 ) -> dict[str, object]:
-    """Evaluate a model-neutral predictor over manifest rows."""
+    """Evaluate accuracy and sequential prediction latency over manifest rows."""
+
+    if latency_warmup_samples < 0:
+        raise ValueError("latency_warmup_samples cannot be negative")
+
+    for row in rows[:latency_warmup_samples]:
+        predictor(row)
 
     accumulator = PoseMetricAccumulator()
+    latency = LatencyAccumulator()
     for row in rows:
         target = load_keypoints(project_root / row["pose_path"])
         valid_mask = keypoint_valid_mask(target, int(row["width"]), int(row["height"]))
-        accumulator.update(predictor(row), target, valid_mask)
+        started = time.perf_counter()
+        predicted = predictor(row)
+        latency.update(time.perf_counter() - started)
+        accumulator.update(predicted, target, valid_mask)
     summary = accumulator.summarize()
+    summary.update(latency.summarize())
     summary["keypoint_names"] = COCO_KEYPOINT_NAMES
     return summary
 
@@ -152,6 +165,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unet-checkpoint", default=None)
     parser.add_argument("--yolo-checkpoint", default=None)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--latency-warmup-samples",
+        type=int,
+        default=3,
+        help="Unmeasured predictor calls made before accuracy and latency evaluation.",
+    )
     parser.add_argument("--output", default="experiments/macchiato_b/evaluation.json")
     return parser.parse_args()
 
@@ -169,12 +188,16 @@ def main() -> None:
         predictor = build_unet_predictor(
             config, project_root, project_path(project_root, args.unet_checkpoint), args.device
         )
-        model_results["unet"] = evaluate_rows(rows, project_root, predictor)
+        model_results["unet"] = evaluate_rows(
+            rows, project_root, predictor, latency_warmup_samples=args.latency_warmup_samples
+        )
     if args.yolo_checkpoint:
         predictor = build_yolo_predictor(
             config, project_root, project_path(project_root, args.yolo_checkpoint), args.split, args.device
         )
-        model_results["yolo"] = evaluate_rows(rows, project_root, predictor)
+        model_results["yolo"] = evaluate_rows(
+            rows, project_root, predictor, latency_warmup_samples=args.latency_warmup_samples
+        )
 
     output_path = project_path(project_root, args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

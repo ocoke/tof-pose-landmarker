@@ -111,3 +111,58 @@ python -m macchiato.evaluation.evaluate_generalization \
   --unet-checkpoint checkpoints/macchiato_b/unet/stage_b_best.pth \
   --yolo-checkpoint experiments/macchiato_b/yolo/yolo26n_pose_depth/weights/best.pt
 ```
+
+The evaluator makes three unmeasured warm-up calls per model by default, then
+reports mean, p50, p95, minimum, and maximum prediction-pipeline latency plus
+sequential throughput. Its timing scope includes input loading, preprocessing,
+inference, and postprocessing, but not ground-truth loading or metric updates.
+Change the warm-up count with `--latency-warmup-samples`.
+
+For a YOLO-only accuracy and CPU performance run on Raspberry Pi 5:
+
+```bash
+python -m macchiato.evaluation.evaluate_generalization \
+  --config configs/macchiato_finetune.yaml \
+  --split test \
+  --yolo-checkpoint experiments/macchiato_b/yolo/yolo26n_pose_depth/weights/best.pt \
+  --device cpu \
+  --latency-warmup-samples 10 \
+  --output experiments/macchiato_b/evaluation_raspberry_pi_5.json
+```
+
+### Raspberry Pi live preview
+
+Install the Arducam ToF SDK on the Raspberry Pi, connect the CSI camera, open a
+graphical desktop session, and run:
+
+```bash
+macchiato-preview \
+  --checkpoint experiments/macchiato_b/yolo/yolo26n_pose_depth/weights/best.pt \
+  --device cpu
+```
+
+The equivalent module command is:
+
+```bash
+python -m macchiato.live_preview \
+  --checkpoint experiments/macchiato_b/yolo/yolo26n_pose_depth/weights/best.pt \
+  --device cpu
+```
+
+The window displays the highest-confidence COCO-17 skeleton and person box on
+the normalized depth frame. It also shows Ultralytics inference latency and a
+rolling camera-to-window FPS with p50/p95 pipeline latency. Press `q` or Escape
+to close the stream. The depth frame is rotated 180 degrees by default to match
+the capture setup; pass `--no-rotate` if the preview is upside down.
+
+Useful Raspberry Pi controls include:
+
+```text
+--threads 4                 PyTorch CPU thread count
+--confidence 0.25           person detection threshold
+--keypoint-confidence 0.25  skeleton drawing threshold
+--warmup-frames 3           model warm-up calls
+--latency-window 120        rolling timing window
+--scale 3                   nearest-neighbor display scale
+--max-frames 0              zero runs until q/Escape
+```

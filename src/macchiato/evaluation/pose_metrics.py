@@ -8,6 +8,49 @@ import numpy as np
 
 
 @dataclass
+class LatencyAccumulator:
+    """Accumulate sequential prediction-pipeline latency in milliseconds."""
+
+    samples_ms: list[float] = field(default_factory=list)
+
+    def update(self, elapsed_seconds: float) -> None:
+        """Record one non-negative elapsed duration measured by a monotonic clock."""
+
+        elapsed_ms = float(elapsed_seconds) * 1000.0
+        if not np.isfinite(elapsed_ms) or elapsed_ms < 0:
+            raise ValueError("elapsed_seconds must be finite and non-negative")
+        self.samples_ms.append(elapsed_ms)
+
+    def summarize(self) -> dict[str, float | int | str | None]:
+        """Return distribution statistics and sequential throughput."""
+
+        if not self.samples_ms:
+            return {
+                "latency_scope": "predictor_call_including_input_loading_preprocessing_inference_postprocessing",
+                "latency_samples": 0,
+                "latency_mean_ms": None,
+                "latency_p50_ms": None,
+                "latency_p95_ms": None,
+                "latency_min_ms": None,
+                "latency_max_ms": None,
+                "throughput_fps": None,
+            }
+
+        values = np.asarray(self.samples_ms, dtype=np.float64)
+        mean_ms = float(np.mean(values))
+        return {
+            "latency_scope": "predictor_call_including_input_loading_preprocessing_inference_postprocessing",
+            "latency_samples": len(self.samples_ms),
+            "latency_mean_ms": mean_ms,
+            "latency_p50_ms": float(np.percentile(values, 50)),
+            "latency_p95_ms": float(np.percentile(values, 95)),
+            "latency_min_ms": float(np.min(values)),
+            "latency_max_ms": float(np.max(values)),
+            "throughput_fps": 1000.0 / mean_ms if mean_ms > 0 else None,
+        }
+
+
+@dataclass
 class PoseMetricAccumulator:
     """Accumulate PCK, detected-only MPJPE, and per-keypoint accuracy."""
 

@@ -25,6 +25,7 @@ test = ["pytest>=8,<10"]
 macchiato-manifest = "macchiato.create_manifest:main"
 macchiato-train = "macchiato.train:main"
 macchiato-evaluate = "macchiato.evaluation.evaluate_generalization:main"
+macchiato-preview = "macchiato.live_preview:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

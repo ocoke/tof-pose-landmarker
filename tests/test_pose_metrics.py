@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from macchiato.evaluation.evaluate_generalization import select_highest_confidence_pose, unpad_keypoints
-from macchiato.evaluation.pose_metrics import PoseMetricAccumulator
+from macchiato.evaluation.pose_metrics import LatencyAccumulator, PoseMetricAccumulator
 
 
 class FakeTensor:
@@ -48,3 +48,18 @@ def test_highest_confidence_pose_and_unpadding() -> None:
     np.testing.assert_array_equal(selected, np.ones((17, 2)) * 7.0)
     padded = np.array([[20.0, 40.0], [30.0, 50.0]], dtype=np.float32)
     np.testing.assert_array_equal(unpad_keypoints(padded, pad_left=0, pad_top=30), [[20.0, 10.0], [30.0, 20.0]])
+
+
+def test_latency_summary_reports_distribution_and_throughput() -> None:
+    latency = LatencyAccumulator()
+    for elapsed_seconds in (0.010, 0.020, 0.030):
+        latency.update(elapsed_seconds)
+
+    summary = latency.summarize()
+    assert summary["latency_samples"] == 3
+    assert summary["latency_mean_ms"] == 20.0
+    assert summary["latency_p50_ms"] == 20.0
+    assert summary["latency_p95_ms"] == 29.0
+    assert summary["latency_min_ms"] == 10.0
+    assert summary["latency_max_ms"] == 30.0
+    assert summary["throughput_fps"] == 50.0
